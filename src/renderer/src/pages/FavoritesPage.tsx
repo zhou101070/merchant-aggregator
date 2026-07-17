@@ -149,6 +149,64 @@ export function FavoritesPage(): React.JSX.Element {
 
       <div className="panel">
         <div className="panel-head">
+          <strong>最近浏览</strong>
+          <span className="sub">
+            {recent.length ? `${recent.length} 条 · ` : ''}
+            商家直达详情；商品可开源站或按标题重搜
+          </span>
+        </div>
+        {recent.length === 0 ? (
+          <Empty title="暂无最近浏览">打开源站或查看商家详情后，会出现在这里。</Empty>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>标题</th>
+                <th>类型</th>
+                <th>时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((r) => {
+                const itemUrl = recentItemUrl(r)
+                return (
+                  <tr
+                    key={`${r.targetType}:${r.targetId}:${r.viewedAt}`}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => openRecent(r)}
+                  >
+                    <td>
+                      <div className="ellipsis" style={{ maxWidth: 420 }}>
+                        {r.titleSnapshot ?? r.targetId}
+                      </div>
+                    </td>
+                    <td className="small muted">{typeLabel(r.targetType)}</td>
+                    <td className="small muted" title={r.viewedAt}>
+                      {timeAgo(r.viewedAt)}
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      {itemUrl ? (
+                        <div className="row-actions">
+                          <IconButton
+                            label="打开源站"
+                            onClick={() => void openExternalSafe(itemUrl)}
+                          >
+                            <Icon name="external" size={14} />
+                          </IconButton>
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
           <strong>收藏</strong>
           <span className="sub">{favorites.length ? `${favorites.length} 条` : ''}</span>
         </div>
@@ -258,61 +316,6 @@ export function FavoritesPage(): React.JSX.Element {
                           移除
                         </button>
                       </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="panel">
-        <div className="panel-head">
-          <strong>最近浏览</strong>
-          <span className="sub">商家直达详情；商品可开源站或按标题重搜</span>
-        </div>
-        {recent.length === 0 ? (
-          <Empty title="暂无最近浏览">打开源站或查看商家详情后，会出现在这里。</Empty>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>标题</th>
-                <th>类型</th>
-                <th>时间</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((r) => {
-                const itemUrl = recentItemUrl(r)
-                return (
-                  <tr
-                    key={`${r.targetType}:${r.targetId}:${r.viewedAt}`}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => openRecent(r)}
-                  >
-                    <td>
-                      <div className="ellipsis" style={{ maxWidth: 420 }}>
-                        {r.titleSnapshot ?? r.targetId}
-                      </div>
-                    </td>
-                    <td className="small muted">{typeLabel(r.targetType)}</td>
-                    <td className="small muted" title={r.viewedAt}>
-                      {timeAgo(r.viewedAt)}
-                    </td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      {itemUrl ? (
-                        <div className="row-actions">
-                          <IconButton
-                            label="打开源站"
-                            onClick={() => void openExternalSafe(itemUrl)}
-                          >
-                            <Icon name="external" size={14} />
-                          </IconButton>
-                        </div>
-                      ) : null}
                     </td>
                   </tr>
                 )

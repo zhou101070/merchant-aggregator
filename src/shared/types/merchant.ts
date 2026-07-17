@@ -62,7 +62,13 @@ export interface MerchantCandidates {
 
 export interface MerchantListQuery {
   q?: string
+  /** Product brand tags in platforms_json (Claude / ChatGPT …) */
   platforms?: string[]
+  /**
+   * Shop site ids (ldxp / catfk …) matched against shop_platform.
+   * Include sentinel `other` (SHOP_PLATFORM_OTHER) for null/empty/unknown platforms.
+   */
+  shopPlatforms?: string[]
   health?: string[]
   host?: string
   /**

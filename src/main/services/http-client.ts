@@ -1,12 +1,18 @@
 import { AppError } from '@shared/types/errors'
 import { RATE_LIMITS } from '@shared/constants'
 import { createLogger } from '../utils/logger'
+import { mainFetch } from '../utils/main-fetch'
+import {
+  browserJsonGetHeaders,
+  resolveRequestUserAgent
+} from '../utils/request-headers'
 import { sleep } from './rate-limiter'
 
 const log = createLogger('http')
 
 export interface HttpClientOptions {
-  userAgent: string
+  /** Empty / omit → desktop Chrome UA via resolveRequestUserAgent. */
+  userAgent?: string
   timeoutMs?: number
   maxRetries?: number
 }
@@ -22,8 +28,8 @@ export class HttpClient {
   private readonly maxRetries: number
   private readonly userAgent: string
 
-  constructor(options: HttpClientOptions) {
-    this.userAgent = options.userAgent
+  constructor(options: HttpClientOptions = {}) {
+    this.userAgent = resolveRequestUserAgent(options.userAgent)
     this.timeoutMs = options.timeoutMs ?? RATE_LIMITS.requestTimeoutMs
     this.maxRetries = options.maxRetries ?? RATE_LIMITS.maxRetries
   }
@@ -37,12 +43,9 @@ export class HttpClient {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), this.timeoutMs)
       try {
-        const res = await fetch(url, {
+        const res = await mainFetch(url, {
           method: 'GET',
-          headers: {
-            Accept: 'application/json',
-            'User-Agent': this.userAgent
-          },
+          headers: browserJsonGetHeaders({ userAgent: this.userAgent }),
           signal: controller.signal
         })
 

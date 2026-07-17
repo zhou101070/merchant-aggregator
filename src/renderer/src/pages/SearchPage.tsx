@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import type { SearchHit } from '@shared/types/search'
 import type { MerchantCandidates } from '@shared/types/merchant'
-import type { RecentView } from '@shared/types/favorites'
 import {
   Button,
   Chip,
@@ -16,6 +15,7 @@ import {
   SkeletonRows,
   StatusDot
 } from '../components/ui'
+import { Pagination } from '../components/pagination'
 import { Icon } from '../components/icons'
 import { useConfirm } from '../components/use-confirm'
 import { useToast } from '../components/use-toast'
@@ -24,9 +24,11 @@ import { bootstrapSpec } from '../lib/confirm-sync'
 import { highlightText } from '../lib/highlight'
 import { openExternalSafe } from '../lib/open-external'
 import { isStale, timeAgo } from '../lib/format-time'
+import { searchHotkeyLabel } from '../lib/mod-key'
 
 const SPEC_CHIPS = ['质保', '直登', '成品', 'Pro', 'Plus', '邮箱', 'Claude', 'GPT']
-const PAGE_SIZE = 100
+const PAGE_SIZE_OPTIONS = [50, 100, 200] as const
+const DEFAULT_PAGE_SIZE = 100
 
 function healthTone(h: string | null | undefined): 'ok' | 'fail' | 'warn' | 'default' {
   if (h === 'healthy') return 'ok'
@@ -87,53 +89,11 @@ function CandidatesCta({
   return null
 }
 
-/** 起始态：从上次继续(最近浏览) */
-function StartPanel({
-  recent,
-  onOpen
-}: {
-  recent: RecentView[]
-  onOpen: (r: RecentView) => void
-}): React.JSX.Element {
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <strong>从上次继续</strong>
-        <span className="sub">最近浏览的商品与商家</span>
-      </div>
-      {recent.length === 0 ? (
-        <Empty title="输入关键词开始搜货">
-          本地检索已同步的发卡网商品，按 <Kbd>↑</Kbd> <Kbd>↓</Kbd> 选择、<Kbd>Enter</Kbd>{' '}
-          打开源站；搜索永不联网。
-        </Empty>
-      ) : (
-        <div className="start-list">
-          {recent.map((r) => (
-            <button
-              key={`${r.targetType}:${r.targetId}`}
-              type="button"
-              className="start-item"
-              onClick={() => onOpen(r)}
-            >
-              <Icon name={r.targetType === 'merchant' ? 'store' : 'clock'} />
-              <span className="t">{r.titleSnapshot ?? r.targetId}</span>
-              <span className="meta">
-                {r.targetType === 'merchant' ? '商家' : '商品'} · {timeAgo(r.viewedAt)}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 export function SearchPage(): React.JSX.Element {
   const { start, startBootstrap, startMerchants, startLdxpSelected, busy, status, progress } =
     useSyncStatus()
   const confirm = useConfirm()
   const toast = useToast()
-  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [q, setQ] = useState(() => searchParams.get('q') ?? '')
   const [debounced, setDebounced] = useState(() => (searchParams.get('q') ?? '').trim())
@@ -159,11 +119,12 @@ export function SearchPage(): React.JSX.Element {
   const [compareTitle, setCompareTitle] = useState('')
   const [compareNotice, setCompareNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [candidatesFor, setCandidatesFor] = useState<{
     key: string
     data: MerchantCandidates
   } | null>(null)
-  const [recent, setRecent] = useState<RecentView[]>([])
   const [freshHours, setFreshHours] = useState(24)
   const [selectedIdx, setSelectedIdx] = useState(-1)
   const searchSeq = useRef(0)
@@ -196,20 +157,20 @@ export function SearchPage(): React.JSX.Element {
           titleContains: titleContains.length ? titleContains : undefined,
           sort,
           sortDir: sort === 'price' ? 'asc' : 'desc',
-          limit: PAGE_SIZE,
+          limit: pageSize,
           offset
         })
         if (seq !== searchSeq.current) return
         setTotal(res.total)
         setEmptyReason(res.emptyReason)
         setFacets(res.facets ?? {})
-        setHits((prev) => (offset === 0 ? res.hits : [...prev, ...res.hits]))
-        if (offset === 0) setSelectedIdx(-1)
+        setHits(res.hits)
+        setSelectedIdx(-1)
       } finally {
         if (seq === searchSeq.current) setLoading(false)
       }
     },
-    [debounced, inStockOnly, merchantName, titleContains, sort]
+    [debounced, inStockOnly, merchantName, titleContains, sort, pageSize]
   )
 
   // 任何同步任务落定后重搜(新鲜度/新店数据即时反映)
@@ -217,9 +178,32 @@ export function SearchPage(): React.JSX.Element {
     progress && ['succeeded', 'failed', 'partial', 'cancelled'].includes(progress.status)
       ? `${progress.jobId}:${progress.status}`
       : ''
+
+  // 筛选/pageSize 变化时先回第 0 页再搜，避免用旧 page 打错 offset
+  const filterKey = `${debounced}\0${inStockOnly}\0${merchantName ?? ''}\0${titleContains.join('\0')}\0${sort}\0${pageSize}`
+  const prevFilterKey = useRef(filterKey)
   useEffect(() => {
-    void doSearch(0)
-  }, [doSearch, syncTick])
+    const filtersChanged = prevFilterKey.current !== filterKey
+    if (filtersChanged) {
+      prevFilterKey.current = filterKey
+      if (page !== 0) {
+        setPage(0)
+        return
+      }
+      void doSearch(0)
+      return
+    }
+    void doSearch(page * pageSize)
+  }, [filterKey, page, pageSize, syncTick, doSearch])
+
+  const pageCount = Math.max(1, Math.ceil(total / pageSize) || 1)
+  const showPager = total > 0
+
+  // 总数变少时把页码钳回合法范围
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1)
+    if (page > maxPage) setPage(maxPage)
+  }, [total, page, pageSize])
 
   // 无数据/无命中时，按关键词找待同步的候选店(按关键词键控，过期结果渲染期丢弃)
   const wantCandidates = Boolean(
@@ -237,19 +221,10 @@ export function SearchPage(): React.JSX.Element {
   }, [wantCandidates, debounced, syncTick])
   const candidates = wantCandidates && candidatesFor?.key === debounced ? candidatesFor.data : null
 
-  const showStart = !debounced && !titleContains.length && !merchantName && !emptyReason
-
-  // 起始态数据：最近浏览
-  useEffect(() => {
-    if (!showStart) return
-    let alive = true
-    void window.api.recent.list(8).then((rows) => {
-      if (alive) setRecent(rows)
-    })
-    return () => {
-      alive = false
-    }
-  }, [showStart, syncTick])
+  /** 无关键词/规格/店名筛选；有商品时应浏览列表，仅在无命中时才用起始态 */
+  const isBrowseIdle =
+    !debounced && !titleContains.length && !merchantName && !inStockOnly
+  const showStart = isBrowseIdle && !emptyReason && !loading && hits.length === 0
 
   const openHit = useCallback(async (hit: SearchHit): Promise<void> => {
     await window.api.recent.touch({
@@ -374,15 +349,6 @@ export function SearchPage(): React.JSX.Element {
     void startBootstrap()
   }
 
-  function openRecent(r: RecentView): void {
-    if (r.targetType === 'merchant') {
-      navigate(`/merchants?id=${encodeURIComponent(r.targetId)}`)
-      return
-    }
-    const term = r.titleSnapshot?.trim()
-    if (term) setQ(term)
-  }
-
   const notSynced = emptyReason === 'SHOP_PRODUCTS_NOT_SYNCED'
   const compareMin = useMemo(() => {
     if (!compareRows?.length) return null
@@ -406,7 +372,7 @@ export function SearchPage(): React.JSX.Element {
             onChange={(e) => setQ(e.target.value)}
             autoFocus
           />
-          <Kbd>⌘K</Kbd>
+          <Kbd>{searchHotkeyLabel()}</Kbd>
         </div>
         <div className="row" style={{ flexWrap: 'nowrap' }}>
           <Segmented
@@ -481,7 +447,14 @@ export function SearchPage(): React.JSX.Element {
           ) : null}
         </div>
       ) : showStart ? (
-        <StartPanel recent={recent} onOpen={openRecent} />
+        <div className="panel">
+          <Empty title="输入关键词开始搜货">
+            本地检索已同步的发卡网商品，按 <Kbd>↑</Kbd> <Kbd>↓</Kbd> 选择、<Kbd>Enter</Kbd>{' '}
+            打开源站；搜索永不联网。
+            <br />
+            最近浏览请到侧栏「收藏与最近」。
+          </Empty>
+        </div>
       ) : emptyReason === 'NO_MATCH' ? (
         <div className="panel">
           <Empty title="没有匹配结果">换个关键词，或按推荐同步可能有货的店。</Empty>
@@ -591,7 +564,6 @@ export function SearchPage(): React.JSX.Element {
                           <td>
                             <div className="row-actions">
                               <Button
-                                size="s"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   void openHit(hit)
@@ -624,31 +596,20 @@ export function SearchPage(): React.JSX.Element {
                     })}
                   </tbody>
                 </table>
-                {hits.length < total ? (
-                  <div className="row" style={{ justifyContent: 'center', padding: 12 }}>
-                    <Button disabled={loading} onClick={() => void doSearch(hits.length)}>
-                      加载更多（{hits.length}/{total}）
-                    </Button>
-                  </div>
-                ) : null}
               </div>
             )}
-            <div className="list-status">
-              <span className="grow">
-                {loading
-                  ? '搜索中…'
-                  : `${total} 条命中 · 本地共 ${status?.counts.shopProducts ?? 0} 条商品`}
-              </span>
-              <span>
-                <Kbd>↑</Kbd> <Kbd>↓</Kbd> 选择
-              </span>
-              <span>
-                <Kbd>Enter</Kbd> 打开源站
-              </span>
-              <span>
-                <Kbd>Esc</Kbd> 取消
-              </span>
-            </div>
+            {showPager ? (
+              <Pagination
+                page={page}
+                pageCount={pageCount}
+                total={total}
+                pageSize={pageSize}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
+                disabled={loading}
+                onChange={setPage}
+                onPageSizeChange={setPageSize}
+              />
+            ) : null}
           </div>
         </>
       )}

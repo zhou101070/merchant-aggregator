@@ -50,7 +50,11 @@ export function useSyncStatus(): {
     return off
   }, [refresh])
 
-  const busy = (status?.running.length ?? 0) > 0
+  // status.running 仅在起停时刷新；进行中以 progress 为准，避免与商家页脱节
+  const busy =
+    (status?.running.length ?? 0) > 0 ||
+    progress?.status === 'running' ||
+    progress?.status === 'pending'
 
   const start = useCallback(
     async (jobType: SyncJobType, extra?: SyncStartExtra) => {

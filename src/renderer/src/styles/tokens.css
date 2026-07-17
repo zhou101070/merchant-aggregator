@@ -58,11 +58,11 @@
   --shadow-2: 0 4px 16px light-dark(oklch(0.15 0.02 85 / 14%), oklch(0 0 0 / 40%));
   --shadow-3: 0 16px 48px light-dark(oklch(0.1 0.02 85 / 22%), oklch(0 0 0 / 55%));
 
-  /* ---- z 层级刻度 ---- */
+  /* ---- z 层级刻度（backdrop 须低于 drawer/dialog，否则蒙版挡住内容） ---- */
   --z-sticky: 10;
   --z-widget: 20;
-  --z-drawer: 30;
-  --z-backdrop: 40;
+  --z-backdrop: 30;
+  --z-drawer: 40;
   --z-dialog: 50;
   --z-toast: 60;
 

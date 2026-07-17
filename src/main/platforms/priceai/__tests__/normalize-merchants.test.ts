@@ -4,7 +4,12 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { openDatabase, closeDatabase } from '../../../db/connection'
 import { MerchantsRepo } from '../../../db/repositories/merchants-repo'
-import { normalizeMerchant, deriveLdxpToken, deriveShopRef } from '../normalize'
+import {
+  normalizeMerchant,
+  deriveLdxpToken,
+  deriveShopRef,
+  hasMerchantExternalLink
+} from '../normalize'
 import { priceaiMerchantsPageSchema } from '../zod'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -81,6 +86,60 @@ describe('priceai merchants normalize', () => {
       const listed = repo.list({ q: '奥特曼', offset: 0, limit: 10 })
       expect(listed.total).toBe(1)
       expect(listed.rows[0].name).toBe('奥特曼严选')
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('hasMerchantExternalLink requires shop_url or entry_url', () => {
+    expect(hasMerchantExternalLink({ shop_url: 'https://a.com', entry_url: null })).toBe(true)
+    expect(hasMerchantExternalLink({ shop_url: null, entry_url: 'https://b.com' })).toBe(true)
+    expect(hasMerchantExternalLink({ shop_url: null, entry_url: null })).toBe(false)
+    expect(hasMerchantExternalLink({ shop_url: '', entry_url: '  ' })).toBe(false)
+  })
+
+  it('deleteWithoutExternalLinks removes no-link merchants and merchant favorites/recent', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      const page = priceaiMerchantsPageSchema.parse(fixture)
+      const withLink = normalizeMerchant(page.rows[0], {
+        fetchedAt: '2026-07-17T06:00:00.000Z',
+        generatedAt: page.generatedAt
+      })
+      const noLink = {
+        ...withLink,
+        id: 'merchant-no-link',
+        name: 'JZ',
+        shop_url: null,
+        entry_url: null,
+        host: null,
+        source_id: null,
+        shop_platform: null,
+        shop_token: null,
+        ldxp_token: null,
+        _shopRefDerived: false
+      }
+      repo.upsertMany([withLink, noLink])
+      db.prepare(
+        `INSERT INTO favorites (target_type, target_id, note, created_at) VALUES ('merchant', ?, NULL, ?)`
+      ).run(noLink.id, '2026-07-17T06:00:00.000Z')
+      db.prepare(
+        `INSERT INTO recent_views (target_type, target_id, title_snapshot, viewed_at) VALUES ('merchant', ?, 'JZ', ?)`
+      ).run(noLink.id, '2026-07-17T06:00:00.000Z')
+
+      expect(repo.deleteWithoutExternalLinks()).toBe(1)
+      expect(repo.count()).toBe(1)
+      expect(repo.getById(withLink.id)?.id).toBe(withLink.id)
+      expect(repo.getById(noLink.id)).toBeNull()
+      const fav = db
+        .prepare(`SELECT COUNT(*) AS c FROM favorites WHERE target_id = ?`)
+        .get(noLink.id) as { c: number }
+      const recent = db
+        .prepare(`SELECT COUNT(*) AS c FROM recent_views WHERE target_id = ?`)
+        .get(noLink.id) as { c: number }
+      expect(fav.c).toBe(0)
+      expect(recent.c).toBe(0)
     } finally {
       closeDatabase(db)
     }

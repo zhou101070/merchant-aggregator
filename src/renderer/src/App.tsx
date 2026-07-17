@@ -1,11 +1,7 @@
 import { useEffect } from 'react'
-import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
-import { SearchPage } from './pages/SearchPage'
-import { MerchantsPage } from './pages/MerchantsPage'
-import { FavoritesPage } from './pages/FavoritesPage'
-import { SyncCenterPage } from './pages/SyncCenterPage'
-import { SettingsPage } from './pages/SettingsPage'
+import { NavLink, useNavigate } from 'react-router-dom'
 import { ConfirmProvider } from './components/dialog'
+import { KeepAlivePages } from './components/keep-alive-pages'
 import { ToastProvider } from './components/toast'
 import { Icon } from './components/icons'
 import { IconButton, Kbd, Progress } from './components/ui'
@@ -13,6 +9,7 @@ import { useSyncStatus } from './hooks/useSync'
 import { formatSyncProgress, jobTypeLabel } from './lib/sync-labels'
 import { timeAgo } from './lib/format-time'
 import { focusSearchInput } from './lib/focus-search'
+import { searchHotkeyLabel } from './lib/mod-key'
 import './styles/app.css'
 
 function SyncWidget(): React.JSX.Element {
@@ -73,14 +70,18 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        navigate('/')
-        focusSearchInput()
-      }
+      // 输入法组字中不抢快捷键
+      if (e.isComposing || e.key === 'Process') return
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
+      if (e.key.toLowerCase() !== 'k') return
+      e.preventDefault()
+      e.stopPropagation()
+      navigate('/')
+      focusSearchInput()
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // capture：优先于页面内 keydown，避免被搜索页方向键等处理截断
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [navigate])
 
   return (
@@ -97,7 +98,7 @@ export default function App(): React.JSX.Element {
                 <Icon name="search" />
                 搜索
                 <span className="nav-kbd">
-                  <Kbd>⌘K</Kbd>
+                  <Kbd>{searchHotkeyLabel()}</Kbd>
                 </span>
               </NavLink>
               <NavLink to="/merchants">
@@ -106,7 +107,7 @@ export default function App(): React.JSX.Element {
               </NavLink>
               <NavLink to="/favorites">
                 <Icon name="bookmark" />
-                收藏
+                收藏与最近
               </NavLink>
               <NavLink to="/sync">
                 <Icon name="sync" />
@@ -124,15 +125,7 @@ export default function App(): React.JSX.Element {
           <div className="main">
             <div className="drag-strip" aria-hidden="true" />
             <main className="content">
-              <Routes>
-                <Route path="/" element={<SearchPage />} />
-                <Route path="/search" element={<Navigate to="/" replace />} />
-                <Route path="/merchants" element={<MerchantsPage />} />
-                <Route path="/favorites" element={<FavoritesPage />} />
-                <Route path="/sync" element={<SyncCenterPage />} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
+              <KeepAlivePages />
             </main>
           </div>
         </div>

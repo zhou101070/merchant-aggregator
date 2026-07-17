@@ -30,6 +30,7 @@
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "better-sqlite3": "^12.11.1",
     "react-router-dom": "^7.18.1",
+    "undici": "^8.7.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

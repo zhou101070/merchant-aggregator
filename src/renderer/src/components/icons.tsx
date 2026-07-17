@@ -55,7 +55,20 @@ const PATHS: Record<string, React.JSX.Element> = {
   close: <path d="m4.25 4.25 7.5 7.5m0-7.5-7.5 7.5" />,
   check: <path d="m3.25 8.5 3.1 3.1L12.75 5" />,
   chevronDown: <path d="m4.25 6.25 3.75 3.75 3.75-3.75" />,
+  chevronLeft: <path d="m9.75 4.25-3.75 3.75 3.75 3.75" />,
   chevronRight: <path d="m6.25 4.25 3.75 3.75-3.75 3.75" />,
+  chevronFirst: (
+    <>
+      <path d="M4.5 4.25v7.5" />
+      <path d="m11.5 4.25-3.75 3.75 3.75 3.75" />
+    </>
+  ),
+  chevronLast: (
+    <>
+      <path d="M11.5 4.25v7.5" />
+      <path d="m4.5 4.25 3.75 3.75-3.75 3.75" />
+    </>
+  ),
   download: (
     <>
       <path d="M8 2.5v7.75" />

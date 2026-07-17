@@ -2,7 +2,7 @@ import { AppError } from '@shared/types/errors'
 import { createLogger } from '../../utils/logger'
 import { IntervalLimiter, sleep } from '../../services/rate-limiter'
 import type { NormalizedMerchantRow } from './normalize'
-import { normalizeMerchant } from './normalize'
+import { hasMerchantExternalLink, normalizeMerchant } from './normalize'
 import { PriceaiClient } from './client'
 import type { PriceaiMerchantsPageParsed } from './zod'
 
@@ -17,7 +17,13 @@ export interface FetchAllMerchantsOptions {
 }
 
 export interface FetchAllMerchantsResult {
+  /** Merchants kept after dropping those without shop_url/entry_url */
   rows: NormalizedMerchantRow[]
+  /** Unique merchant ids seen from API (before no-link drop) */
+  fetchedUnique: number
+  /** Dropped because both shop_url and entry_url empty */
+  droppedNoLink: number
+  /** Upstream page.total when known */
   total: number
   generatedAt: string | null
   pages: number
@@ -91,17 +97,18 @@ export async function fetchAllMerchants(
     for (const raw of page.rows) {
       if (seen.has(raw.id)) continue
       seen.add(raw.id)
-      out.push(
-        normalizeMerchant(raw, {
-          fetchedAt,
-          generatedAt: page.generatedAt
-        })
-      )
+      const row = normalizeMerchant(raw, {
+        fetchedAt,
+        generatedAt: page.generatedAt
+      })
+      // 无外链丢弃；分页完整性仍按上游 unique id 计数
+      if (hasMerchantExternalLink(row)) out.push(row)
     }
 
+    const unique = seen.size
     options.onProgress?.({
-      current: Math.min(out.length, Number.isFinite(total) ? total : out.length),
-      total: Number.isFinite(total) ? total : out.length,
+      current: Math.min(unique, Number.isFinite(total) ? total : unique),
+      total: Number.isFinite(total) ? total : unique,
       page: pages
     })
 
@@ -110,22 +117,23 @@ export async function fetchAllMerchants(
       got: page.rows.length,
       total: page.total,
       limited: page.limited,
-      unique: out.length
+      unique,
+      kept: out.length
     })
 
     // --- stop / continue (protocol checks: no silent early exit) ---
     if (page.rows.length === 0) {
-      if (page.limited && Number.isFinite(total) && out.length < total) {
+      if (page.limited && Number.isFinite(total) && unique < total) {
         throw new AppError(
           'NETWORK',
-          `merchants empty page before total exhausted (got ${out.length}/${total})`,
+          `merchants empty page before total exhausted (got ${unique}/${total})`,
           { offset, total, limited: page.limited }
         )
       }
       break
     }
 
-    if (Number.isFinite(total) && out.length >= total) {
+    if (Number.isFinite(total) && unique >= total) {
       break
     }
 
@@ -139,7 +147,7 @@ export async function fetchAllMerchants(
     if (page.rows.length < limit) {
       throw new AppError(
         'NETWORK',
-        `merchants short page while limited=true (got ${out.length}/${total}, page=${page.rows.length}, limit=${limit})`,
+        `merchants short page while limited=true (got ${unique}/${total}, page=${page.rows.length}, limit=${limit})`,
         {
           offset,
           total,
@@ -153,17 +161,20 @@ export async function fetchAllMerchants(
     offset += page.rows.length
   }
 
-  if (Number.isFinite(total) && out.length < total) {
+  const unique = seen.size
+  if (Number.isFinite(total) && unique < total) {
     throw new AppError(
       'NETWORK',
-      `merchants incomplete after pagination: got ${out.length}/${total} (pages=${pages})`,
-      { got: out.length, total, pages, offset }
+      `merchants incomplete after pagination: got ${unique}/${total} (pages=${pages})`,
+      { got: unique, total, pages, offset }
     )
   }
 
   return {
     rows: out,
-    total: Number.isFinite(total) ? total : out.length,
+    fetchedUnique: unique,
+    droppedNoLink: unique - out.length,
+    total: Number.isFinite(total) ? total : unique,
     generatedAt,
     pages
   }

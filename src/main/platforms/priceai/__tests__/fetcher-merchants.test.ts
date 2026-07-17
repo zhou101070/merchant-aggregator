@@ -180,5 +180,33 @@ describe('fetchAllMerchants pagination', () => {
     const result = await fetchAllMerchants({ client, limit: 2, intervalMs: 0 })
     expect(result.rows.map((r) => r.id).sort()).toEqual(['a', 'b', 'c'])
     expect(result.total).toBe(3)
+    expect(result.fetchedUnique).toBe(3)
+    expect(result.droppedNoLink).toBe(0)
+  })
+
+  it('drops merchants without shop_url/entry_url but still completes pagination by unique id', async () => {
+    const withLink = merchant('keep')
+    const noLink = {
+      ...merchant('drop'),
+      host: null,
+      shopUrl: null,
+      entryUrl: null,
+      sourceId: null
+    }
+    const client = mockClient(() =>
+      page({
+        rows: [withLink, noLink],
+        total: 2,
+        limited: false,
+        limit: 100,
+        offset: 0
+      })
+    )
+
+    const result = await fetchAllMerchants({ client, limit: 100, intervalMs: 0 })
+    expect(result.rows.map((r) => r.id)).toEqual(['keep'])
+    expect(result.fetchedUnique).toBe(2)
+    expect(result.droppedNoLink).toBe(1)
+    expect(result.total).toBe(2)
   })
 })

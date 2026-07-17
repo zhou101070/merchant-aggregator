@@ -1,5 +1,11 @@
 import type Database from 'better-sqlite3'
-import type { SyncJobRecord, SyncJobStatus, SyncJobType } from '@shared/types/sync'
+import type {
+  SyncJobListQuery,
+  SyncJobListResult,
+  SyncJobRecord,
+  SyncJobStatus,
+  SyncJobType
+} from '@shared/types/sync'
 
 interface SyncJobRow {
   id: string
@@ -126,14 +132,38 @@ export class SyncJobsRepo {
   }
 
   listRecent(limit = 20): SyncJobRecord[] {
+    return this.list({ limit, offset: 0 }).rows
+  }
+
+  list(query: SyncJobListQuery = {}): SyncJobListResult {
+    const limit = Math.max(1, Math.min(query.limit ?? 20, 100))
+    const offset = Math.max(0, query.offset ?? 0)
+    const status = query.status ?? 'all'
+    const where: string[] = []
+    const params: Record<string, unknown> = {}
+
+    if (status === 'running') {
+      where.push(`status IN ('pending', 'running')`)
+    } else if (status !== 'all') {
+      where.push(`status = @status`)
+      params.status = status
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    const total = (
+      this.db.prepare(`SELECT COUNT(*) AS c FROM sync_jobs ${whereSql}`).get(params) as {
+        c: number
+      }
+    ).c
     const rows = this.db
       .prepare(
-        `SELECT * FROM sync_jobs
+        `SELECT * FROM sync_jobs ${whereSql}
          ORDER BY COALESCE(finished_at, started_at, '') DESC
-         LIMIT ?`
+         LIMIT @limit OFFSET @offset`
       )
-      .all(limit) as SyncJobRow[]
-    return rows.map(mapRow)
+      .all({ ...params, limit, offset }) as SyncJobRow[]
+
+    return { rows: rows.map(mapRow), total, offset, limit }
   }
 
   listRunning(): SyncJobRecord[] {
@@ -156,6 +186,25 @@ export class SyncJobsRepo {
          WHERE status IN ('pending', 'running')`
       )
       .run(reason, finishedAt)
+    return info.changes
+  }
+
+  /** Delete a finished job. Running/pending jobs are not deleted. */
+  delete(id: string): { ok: boolean; reason?: string } {
+    const row = this.get(id)
+    if (!row) return { ok: false, reason: 'not_found' }
+    if (row.status === 'running' || row.status === 'pending') {
+      return { ok: false, reason: 'running' }
+    }
+    this.db.prepare(`DELETE FROM sync_jobs WHERE id = ?`).run(id)
+    return { ok: true }
+  }
+
+  /** Remove finished history; keep pending/running. */
+  clearFinished(): number {
+    const info = this.db
+      .prepare(`DELETE FROM sync_jobs WHERE status NOT IN ('pending', 'running')`)
+      .run()
     return info.changes
   }
 

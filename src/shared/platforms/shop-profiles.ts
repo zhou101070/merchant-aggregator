@@ -21,11 +21,7 @@ export const LDXP_PROFILE: ShopSiteProfile = {
   probeStatus: 'ok'
 }
 
-/**
- * catfk.com — shopApi-family white-label candidate (HTML shell matches ldxp).
- * Default disabled until PR6 smoke verifies Shop/info + goodsList.
- * parseShopUrl still recognizes hosts so wrong-platform attribution is fixed.
- */
+/** catfk.com — shopApi-family white-label (HTML shell matches ldxp). */
 export const CATFK_PROFILE: ShopSiteProfile = {
   id: 'catfk',
   displayName: 'catfk',
@@ -37,11 +33,23 @@ export const CATFK_PROFILE: ShopSiteProfile = {
   sourceId: 'catfk',
   defaultGoodsTypes: ['card', 'article', 'resource', 'equity'],
   defaultMinIntervalMs: 500,
-  enabled: false,
-  probeStatus: 'unverified'
+  enabled: true,
+  probeStatus: 'ok'
 }
 
 export const SHOP_PROFILES: readonly ShopSiteProfile[] = [LDXP_PROFILE, CATFK_PROFILE]
+
+/**
+ * Merchant list filter value: shop_platform not in SHOP_PROFILES (incl. null/empty).
+ * Not a real shop_platform id — only used by MerchantsRepo.list / UI Select.
+ */
+export const SHOP_PLATFORM_OTHER = 'other'
+
+export function knownShopPlatformIds(
+  profiles: readonly ShopSiteProfile[] = SHOP_PROFILES
+): string[] {
+  return profiles.map((p) => p.id)
+}
 
 /** Hosts that may appear on scrapable shop / item pages (from profiles). */
 export function scrapableShopHosts(profiles: readonly ShopSiteProfile[] = SHOP_PROFILES): string[] {

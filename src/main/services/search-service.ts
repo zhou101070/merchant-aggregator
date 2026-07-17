@@ -129,77 +129,51 @@ export class SearchService {
 
     const q = (req.q ?? '').trim()
     const tokens = tokenizeQuery(q)
-    const limit = req.limit ?? SEARCH_DEFAULTS.limit
-    const offset = req.offset ?? SEARCH_DEFAULTS.offset
-
-    const { where, params } = this.buildWhere(req, q, tokens)
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
-    let rows = this.db
-      .prepare(`${SHOP_SELECT} ${whereSql} LIMIT 3000`)
-      .all(params) as ShopSearchRow[]
-
-    // Soft fallback: multi-token AND empty → OR match (recall), score still ranks best first
-    if (q && tokens.length >= 2 && rows.length === 0) {
-      const or = this.buildTokenOrWhere(tokens)
-      const orWhere = [...or.where]
-      const orParams = { ...or.params }
-      this.appendFilters(req, orWhere, orParams)
-      const orSql = orWhere.length ? `WHERE ${orWhere.join(' AND ')}` : ''
-      rows = this.db.prepare(`${SHOP_SELECT} ${orSql} LIMIT 3000`).all(orParams) as ShopSearchRow[]
-    }
-
-    const hits: SearchHit[] = rows.map((row) => ({
-      kind: 'shop_product' as const,
-      id: `shop:${row.id}`,
-      title: row.title,
-      subtitle: row.shop_name || row.merchant_name || undefined,
-      merchantId: row.merchant_id,
-      merchantName: row.merchant_name || row.shop_name,
-      merchantHealth: row.merchant_health,
-      price: row.price,
-      currency: row.currency,
-      status: isInStock(row.stock) ? 'in_stock' : null,
-      stockCount: row.stock,
-      productType: row.goods_type || row.category_name,
-      sourceUrl: row.source_url,
-      platformId: row.source,
-      shopToken: row.source_shop_token,
-      shopGoodsKey: row.source_goods_key,
-      ldxpGoodsKey: row.source_goods_key,
-      ldxpToken: row.source_shop_token,
-      score: scoreShop(row, q, tokens),
-      fetchedAt: row.fetched_at
-    }))
-
+    const limit = Math.max(1, req.limit ?? SEARCH_DEFAULTS.limit)
+    const offset = Math.max(0, req.offset ?? SEARCH_DEFAULTS.offset)
     const sort = req.sort ?? 'score'
     const sortDir = req.sortDir ?? (sort === 'price' ? 'asc' : 'desc')
-    hits.sort((a, b) => {
-      if (sort === 'price') {
-        const ap = a.price
-        const bp = b.price
-        if (ap == null && bp == null) return b.score - a.score
-        if (ap == null) return 1
-        if (bp == null) return -1
-        const cmp = ap - bp
-        return sortDir === 'asc' ? cmp : -cmp
-      }
-      const cmp = a.score - b.score
-      if (cmp !== 0) return sortDir === 'asc' ? cmp : -cmp
-      const ap = a.price
-      const bp = b.price
-      if (ap == null && bp == null) return 0
-      if (ap == null) return 1
-      if (bp == null) return -1
-      return ap - bp
-    })
 
-    const facets = this.buildFacets(hits)
-    const total = hits.length
-    const page = hits.slice(offset, offset + limit)
-    if (total === 0) {
-      return { hits: [], total: 0, emptyReason: 'NO_MATCH', facets }
+    let { where, params } = this.buildWhere(req, q, tokens)
+    let whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+
+    // Soft fallback: multi-token AND empty → OR match (recall)
+    if (q && tokens.length >= 2) {
+      const andTotal = this.countWhere(whereSql, params)
+      if (andTotal === 0) {
+        const or = this.buildTokenOrWhere(tokens)
+        const orWhere = [...or.where]
+        const orParams = { ...or.params }
+        this.appendFilters(req, orWhere, orParams)
+        where = orWhere
+        params = orParams
+        whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+      }
     }
-    return { hits: page, total, facets }
+
+    const total = this.countWhere(whereSql, params)
+    if (total === 0) {
+      return { hits: [], total: 0, emptyReason: 'NO_MATCH', facets: {} }
+    }
+
+    // No free-text query: SQL page over full match set (no 3000 cap).
+    // With free-text: score in memory over all matches (usually << catalog size).
+    if (!q) {
+      const orderSql = this.browseOrderSql(sort, sortDir)
+      const pageParams = { ...params, limit, offset }
+      const rows = this.db
+        .prepare(`${SHOP_SELECT} ${whereSql} ${orderSql} LIMIT @limit OFFSET @offset`)
+        .all(pageParams) as ShopSearchRow[]
+      const hits = rows.map((row) => this.toHit(row, q, tokens))
+      const facets = this.buildFacetsSql(whereSql, params)
+      return { hits, total, facets }
+    }
+
+    const rows = this.db.prepare(`${SHOP_SELECT} ${whereSql}`).all(params) as ShopSearchRow[]
+    const hits = rows.map((row) => this.toHit(row, q, tokens))
+    this.sortHits(hits, sort, sortDir)
+    const facets = this.buildFacets(hits)
+    return { hits: hits.slice(offset, offset + limit), total, facets }
   }
 
   compare(req: CompareRequest): CompareResult {
@@ -326,6 +300,85 @@ export class SearchService {
     }
   }
 
+  private countWhere(whereSql: string, params: Record<string, unknown>): number {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM shop_products s
+           LEFT JOIN merchants m ON m.id = s.merchant_id
+           ${whereSql}`
+        )
+        .get(params) as { c: number }
+    ).c
+  }
+
+  /** Browse / filter-only ordering (no free-text relevance score). */
+  private browseOrderSql(sort: string, sortDir: string): string {
+    const dir = sortDir === 'asc' ? 'ASC' : 'DESC'
+    if (sort === 'price') {
+      return `ORDER BY (s.price IS NULL) ASC, s.price ${dir}, s.id ASC`
+    }
+    // Default "score" browse: in-stock first, healthy shops, then cheaper
+    return `ORDER BY
+      (CASE WHEN s.stock IS NOT NULL AND s.stock > 0 THEN 0 ELSE 1 END) ASC,
+      (CASE
+         WHEN m.app_health_status = 'healthy' THEN 0
+         WHEN m.app_health_status = 'failing' THEN 2
+         WHEN m.app_health_status = 'retrying' THEN 1
+         ELSE 1
+       END) ASC,
+      (s.price IS NULL) ASC,
+      s.price ASC,
+      s.id ASC`
+  }
+
+  private toHit(row: ShopSearchRow, q: string, tokens: string[]): SearchHit {
+    return {
+      kind: 'shop_product',
+      id: `shop:${row.id}`,
+      title: row.title,
+      subtitle: row.shop_name || row.merchant_name || undefined,
+      merchantId: row.merchant_id,
+      merchantName: row.merchant_name || row.shop_name,
+      merchantHealth: row.merchant_health,
+      price: row.price,
+      currency: row.currency,
+      status: isInStock(row.stock) ? 'in_stock' : null,
+      stockCount: row.stock,
+      productType: row.goods_type || row.category_name,
+      sourceUrl: row.source_url,
+      platformId: row.source,
+      shopToken: row.source_shop_token,
+      shopGoodsKey: row.source_goods_key,
+      ldxpGoodsKey: row.source_goods_key,
+      ldxpToken: row.source_shop_token,
+      score: scoreShop(row, q, tokens),
+      fetchedAt: row.fetched_at
+    }
+  }
+
+  private sortHits(hits: SearchHit[], sort: string, sortDir: string): void {
+    hits.sort((a, b) => {
+      if (sort === 'price') {
+        const ap = a.price
+        const bp = b.price
+        if (ap == null && bp == null) return b.score - a.score
+        if (ap == null) return 1
+        if (bp == null) return -1
+        const cmp = ap - bp
+        return sortDir === 'asc' ? cmp : -cmp
+      }
+      const cmp = a.score - b.score
+      if (cmp !== 0) return sortDir === 'asc' ? cmp : -cmp
+      const ap = a.price
+      const bp = b.price
+      if (ap == null && bp == null) return 0
+      if (ap == null) return 1
+      if (bp == null) return -1
+      return ap - bp
+    })
+  }
+
   private buildFacets(hits: SearchHit[]): FacetCounts {
     const merchants = new Map<string, number>()
     const productTypes = new Map<string, number>()
@@ -333,14 +386,48 @@ export class SearchService {
       if (h.merchantName) merchants.set(h.merchantName, (merchants.get(h.merchantName) ?? 0) + 1)
       if (h.productType) productTypes.set(h.productType, (productTypes.get(h.productType) ?? 0) + 1)
     }
-    const toBuckets = (m: Map<string, number>): { value: string; count: number }[] =>
-      [...m.entries()]
-        .map(([value, count]) => ({ value, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 30)
     return {
-      merchant: toBuckets(merchants),
-      productType: toBuckets(productTypes)
+      merchant: this.toFacetBuckets(merchants),
+      productType: this.toFacetBuckets(productTypes)
     }
+  }
+
+  /** Facets over full SQL match set (browse path — not just current page). */
+  private buildFacetsSql(whereSql: string, params: Record<string, unknown>): FacetCounts {
+    const merchantRows = this.db
+      .prepare(
+        `SELECT COALESCE(m.name, s.shop_name) AS value, COUNT(*) AS c
+         FROM shop_products s
+         LEFT JOIN merchants m ON m.id = s.merchant_id
+         ${whereSql}
+         GROUP BY value
+         HAVING value IS NOT NULL AND value != ''
+         ORDER BY c DESC
+         LIMIT 30`
+      )
+      .all(params) as { value: string; c: number }[]
+    const typeRows = this.db
+      .prepare(
+        `SELECT COALESCE(s.goods_type, s.category_name) AS value, COUNT(*) AS c
+         FROM shop_products s
+         LEFT JOIN merchants m ON m.id = s.merchant_id
+         ${whereSql}
+         GROUP BY value
+         HAVING value IS NOT NULL AND value != ''
+         ORDER BY c DESC
+         LIMIT 30`
+      )
+      .all(params) as { value: string; c: number }[]
+    return {
+      merchant: merchantRows.map((r) => ({ value: r.value, count: r.c })),
+      productType: typeRows.map((r) => ({ value: r.value, count: r.c }))
+    }
+  }
+
+  private toFacetBuckets(m: Map<string, number>): { value: string; count: number }[] {
+    return [...m.entries()]
+      .map(([value, count]) => ({ value, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 30)
   }
 }

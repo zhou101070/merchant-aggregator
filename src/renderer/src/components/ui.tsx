@@ -4,7 +4,6 @@ import type { ButtonHTMLAttributes, InputHTMLAttributes, PropsWithChildren, Reac
 
 export function Button({
   variant = 'default',
-  size,
   loading,
   className,
   children,
@@ -12,15 +11,9 @@ export function Button({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'default' | 'primary' | 'ghost' | 'danger'
-  size?: 's'
   loading?: boolean
 }): React.JSX.Element {
-  const cls = [
-    'btn',
-    variant !== 'default' ? `btn-${variant}` : '',
-    size === 's' ? 'btn-s' : '',
-    className ?? ''
-  ]
+  const cls = ['btn', variant !== 'default' ? `btn-${variant}` : '', className ?? '']
     .filter(Boolean)
     .join(' ')
   return (

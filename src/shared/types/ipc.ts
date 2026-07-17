@@ -3,7 +3,13 @@ import type { Merchant, MerchantCandidates, MerchantListQuery } from './merchant
 import type { CompareRequest, CompareResult, ShopProduct, ShopProductListQuery } from './product'
 import type { SearchMeta, SearchQuery, SearchResult } from './search'
 import type { AppSettings } from './settings'
-import type { SyncProgressEvent, SyncStartRequest, SyncStatus } from './sync'
+import type {
+  SyncJobListQuery,
+  SyncJobListResult,
+  SyncProgressEvent,
+  SyncStartRequest,
+  SyncStatus
+} from './sync'
 
 export const IPC_CHANNELS = {
   merchantsList: 'merchants:list',
@@ -17,6 +23,9 @@ export const IPC_CHANNELS = {
   syncCancel: 'sync:cancel',
   syncStatus: 'sync:status',
   syncProgress: 'sync:progress',
+  syncDeleteJob: 'sync:deleteJob',
+  syncClearHistory: 'sync:clearHistory',
+  syncListJobs: 'sync:listJobs',
   favoritesList: 'favorites:list',
   favoritesAdd: 'favorites:add',
   favoritesRemove: 'favorites:remove',
@@ -51,6 +60,9 @@ export interface RendererApi {
     start: (req: SyncStartRequest) => Promise<{ jobId: string }>
     cancel: (jobId: string) => Promise<{ ok: boolean }>
     status: () => Promise<SyncStatus>
+    listJobs: (q?: SyncJobListQuery) => Promise<SyncJobListResult>
+    deleteJob: (jobId: string) => Promise<{ ok: boolean; reason?: string }>
+    clearHistory: () => Promise<{ deleted: number }>
     onProgress: (cb: (e: SyncProgressEvent) => void) => () => void
   }
   favorites: {

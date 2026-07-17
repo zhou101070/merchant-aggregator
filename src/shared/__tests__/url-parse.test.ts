@@ -14,7 +14,7 @@ describe('parseShopUrl', () => {
       platformId: 'catfk',
       token: 'hththt',
       baseUrl: 'https://catfk.com',
-      profileEnabled: false
+      profileEnabled: true
     })
     expect(r?.shopUrl).toBe('https://catfk.com/shop/hththt')
   })
@@ -43,7 +43,7 @@ describe('parseShopUrl', () => {
 
   it('uses all registered profiles including disabled', () => {
     const catfk = SHOP_PROFILES.find((p) => p.id === 'catfk')
-    expect(catfk?.enabled).toBe(false)
+    expect(catfk?.enabled).toBe(true)
     expect(parseShopUrl('https://www.catfk.com/shop/hththt')?.platformId).toBe('catfk')
   })
 })

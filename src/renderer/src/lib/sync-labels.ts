@@ -26,7 +26,8 @@ const PHASE_LABEL: Record<string, string> = {
 /** 错误码 → 用户可执行的提示；未知码原样返回 */
 const ERROR_HINT: Record<string, string> = {
   NEED_BROWSER: '店铺触发了人机验证：先在浏览器打开一次该店铺，稍后重试',
-  NETWORK: '网络错误，部分请求失败，可稍后重试',
+  NETWORK:
+    '网络错误：连不上目标站（常见于代理/DNS fake-ip）。可先在浏览器打开该店确认可访问，并检查系统代理',
   TIMEOUT: '请求超时，稍后重试',
   RATE_LIMIT: '触发限流，建议调大请求间隔后重试',
   DEGRADED: '上游服务降级，稍后重试',

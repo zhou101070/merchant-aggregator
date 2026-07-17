@@ -9,6 +9,8 @@ function insertMerchant(
     id: string
     name: string
     ldxpToken?: string | null
+    shopPlatform?: string | null
+    shopToken?: string | null
     offerCount?: number
     appHealthStatus?: string | null
     appHealthAt?: string | null
@@ -16,7 +18,8 @@ function insertMerchant(
     representativeProduct?: string | null
   }
 ): void {
-  const token = row.ldxpToken ?? null
+  const token = row.shopToken ?? row.ldxpToken ?? null
+  const platform = row.shopPlatform ?? (token ? 'ldxp' : null)
   db.prepare(
     `INSERT INTO merchants (
        id, name, fetched_at, ldxp_token, shop_platform, shop_token, offer_count,
@@ -26,8 +29,8 @@ function insertMerchant(
     row.id,
     row.name,
     new Date().toISOString(),
-    token,
-    token ? 'ldxp' : null,
+    platform === 'ldxp' ? token : (row.ldxpToken ?? null),
+    platform,
     token,
     row.offerCount ?? 0,
     row.appHealthStatus ?? null,
@@ -123,6 +126,51 @@ describe('MerchantsRepo incremental sync helpers', () => {
       const none = repo.candidatesForQuery('   ', 24)
       expect(none.merchantIds).toEqual([])
       expect(none.totalMatching).toBe(0)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+})
+
+describe('MerchantsRepo list shopPlatforms', () => {
+  it('filters by shop_platform', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      insertMerchant(db, { id: 'l1', name: '链动店', shopPlatform: 'ldxp', shopToken: 'a' })
+      insertMerchant(db, { id: 'c1', name: 'catfk店', shopPlatform: 'catfk', shopToken: 'b' })
+      insertMerchant(db, { id: 'n1', name: '无平台店' })
+
+      const all = repo.list({ offset: 0, limit: 50 })
+      expect(all.total).toBe(3)
+
+      const ldxp = repo.list({ shopPlatforms: ['ldxp'], offset: 0, limit: 50 })
+      expect(ldxp.rows.map((r) => r.id)).toEqual(['l1'])
+
+      const catfk = repo.list({ shopPlatforms: ['catfk'], offset: 0, limit: 50 })
+      expect(catfk.rows.map((r) => r.id)).toEqual(['c1'])
+
+      const both = repo.list({ shopPlatforms: ['ldxp', 'catfk'], offset: 0, limit: 50 })
+      expect(both.rows.map((r) => r.id).sort()).toEqual(['c1', 'l1'])
+
+      insertMerchant(db, { id: 'x1', name: '未知平台店', shopPlatform: 'weird', shopToken: 'z' })
+      insertMerchant(db, {
+        id: 'legacy',
+        name: '仅 ldxp_token',
+        ldxpToken: 'legacyTok'
+      })
+      const other = repo.list({ shopPlatforms: ['other'], offset: 0, limit: 50 })
+      // n1 null platform; x1 unknown platform; legacy dual-fills as ldxp → not other
+      expect(other.rows.map((r) => r.id).sort()).toEqual(['n1', 'x1'])
+
+      const otherScrapable = repo.list({
+        shopPlatforms: ['other'],
+        scrapableOnly: true,
+        offset: 0,
+        limit: 50
+      })
+      // weird has token+platform → scrapable unknown platform still counts as other
+      expect(otherScrapable.rows.map((r) => r.id)).toEqual(['x1'])
     } finally {
       closeDatabase(db)
     }

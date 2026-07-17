@@ -78,6 +78,37 @@ describe('SearchService local-only shop_products', () => {
 
       const byPrice = search.query({ q: '', sort: 'price', sortDir: 'asc', limit: 10, offset: 0 })
       expect(byPrice.hits[0].price).toBe(10)
+      expect(byPrice.total).toBe(2)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('browse empty query reports full catalog total and pages past former 3000 cap', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      const rows = Array.from({ length: 45 }, (_, i) => ({
+        id: `s${i}`,
+        merchantId: 'm1',
+        token: 'TOK1',
+        key: `g${i}`,
+        title: `商品 ${i}`,
+        price: i + 1,
+        stock: 1
+      }))
+      seedProducts(db, rows)
+
+      const search = new SearchService(db)
+      const page0 = search.query({ q: '', sort: 'price', sortDir: 'asc', limit: 20, offset: 0 })
+      expect(page0.total).toBe(45)
+      expect(page0.hits).toHaveLength(20)
+      expect(page0.hits[0].price).toBe(1)
+
+      const page2 = search.query({ q: '', sort: 'price', sortDir: 'asc', limit: 20, offset: 40 })
+      expect(page2.total).toBe(45)
+      expect(page2.hits).toHaveLength(5)
+      expect(page2.hits[0].price).toBe(41)
     } finally {
       closeDatabase(db)
     }

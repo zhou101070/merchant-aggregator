@@ -7,7 +7,7 @@ import type { MerchantListQuery } from '@shared/types/merchant'
 import type { CompareRequest, ShopProductListQuery } from '@shared/types/product'
 import type { SearchQuery } from '@shared/types/search'
 import type { AppSettings } from '@shared/types/settings'
-import type { SyncStartRequest } from '@shared/types/sync'
+import type { SyncJobListQuery, SyncStartRequest } from '@shared/types/sync'
 import type { Repositories } from '../db/repositories'
 import type { SyncOrchestrator } from '../services/sync-orchestrator'
 import type { SearchService } from '../services/search-service'
@@ -74,6 +74,15 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     ctx.sync.cancel(req.jobId)
   )
   ipcMain.handle(IPC_CHANNELS.syncStatus, async () => ctx.sync.getStatus())
+  ipcMain.handle(IPC_CHANNELS.syncListJobs, async (_e, query: SyncJobListQuery) =>
+    ctx.repos.syncJobs.list(query ?? {})
+  )
+  ipcMain.handle(IPC_CHANNELS.syncDeleteJob, async (_e, req: { jobId: string }) =>
+    ctx.repos.syncJobs.delete(req.jobId)
+  )
+  ipcMain.handle(IPC_CHANNELS.syncClearHistory, async () => ({
+    deleted: ctx.repos.syncJobs.clearFinished()
+  }))
 
   ipcMain.handle(IPC_CHANNELS.favoritesList, async () => ctx.repos.favorites.list())
   ipcMain.handle(

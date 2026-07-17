@@ -18,6 +18,7 @@ import { Icon } from '../components/icons'
 import { useConfirm } from '../components/use-confirm'
 import { useToast } from '../components/use-toast'
 import { useSyncStatus } from '../hooks/useSync'
+import { SHOP_PLATFORM_OTHER, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { shopAllSpec } from '../lib/confirm-sync'
 import { openExternalSafe } from '../lib/open-external'
 import { formatSyncProgress } from '../lib/sync-labels'
@@ -48,6 +49,17 @@ function healthLabel(h: string | null | undefined): string {
     default:
       return h?.trim() ? h : '未同步'
   }
+}
+
+/** 同名店消歧：优先 host / sourceId，否则品牌 + id 短尾 */
+function merchantSubline(m: Merchant): string {
+  const host = m.host?.trim()
+  if (host) return host
+  const sourceId = m.sourceId?.trim()
+  if (sourceId) return sourceId
+  const tail = m.id.replace(/^merchant-/, '').slice(-8)
+  const brands = m.platforms.filter(Boolean).join(' · ')
+  return brands ? `${brands} · ${tail}` : tail
 }
 
 export function MerchantsPage(): React.JSX.Element {
@@ -81,6 +93,7 @@ export function MerchantsPage(): React.JSX.Element {
   const [scrapableOnly, setScrapableOnly] = useState(false)
   const [withoutShopProducts, setWithoutShopProducts] = useState(false)
   const [healthFilter, setHealthFilter] = useState<string>('all')
+  const [platformFilter, setPlatformFilter] = useState<string>('all')
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 250)
@@ -114,6 +127,7 @@ export function MerchantsPage(): React.JSX.Element {
         scrapableOnly: scrapableOnly || withoutShopProducts || undefined,
         withoutShopProducts: withoutShopProducts || undefined,
         health: healthFilter === 'all' ? undefined : [healthFilter],
+        shopPlatforms: platformFilter === 'all' ? undefined : [platformFilter],
         offset: 0,
         limit: 500,
         sort: 'offerCount',
@@ -129,7 +143,7 @@ export function MerchantsPage(): React.JSX.Element {
     } finally {
       setLoading(false)
     }
-  }, [debouncedQ, selectedId, scrapableOnly, withoutShopProducts, healthFilter])
+  }, [debouncedQ, selectedId, scrapableOnly, withoutShopProducts, healthFilter, platformFilter])
 
   useEffect(() => {
     void load()
@@ -255,6 +269,23 @@ export function MerchantsPage(): React.JSX.Element {
           尚未同步商品
         </Chip>
         <Select
+          value={platformFilter}
+          onValueChange={(v) => {
+            setPlatformFilter(v)
+            // 「其他」= 未注册 scrapable 平台，几乎都不可深刮；与「仅可深刮」并用必为空
+            if (v === SHOP_PLATFORM_OTHER) {
+              setScrapableOnly(false)
+              setWithoutShopProducts(false)
+            }
+          }}
+          ariaLabel="平台筛选"
+          options={[
+            { value: 'all', label: '全部平台' },
+            ...SHOP_PROFILES.map((p) => ({ value: p.id, label: p.displayName })),
+            { value: SHOP_PLATFORM_OTHER, label: '其他' }
+          ]}
+        />
+        <Select
           value={healthFilter}
           onValueChange={setHealthFilter}
           ariaLabel="健康筛选"
@@ -292,14 +323,48 @@ export function MerchantsPage(): React.JSX.Element {
       ) : total === 0 ? (
         <div className="panel">
           <Empty
-            title="还没有商家数据"
+            title={
+              platformFilter !== 'all' ||
+              scrapableOnly ||
+              withoutShopProducts ||
+              healthFilter !== 'all' ||
+              debouncedQ
+                ? '没有匹配的商家'
+                : '还没有商家数据'
+            }
             actions={
-              <Button variant="primary" onClick={() => void startMerchants()} disabled={busy}>
-                从 PriceAI 同步商家
-              </Button>
+              platformFilter === 'all' &&
+              !scrapableOnly &&
+              !withoutShopProducts &&
+              healthFilter === 'all' &&
+              !debouncedQ ? (
+                <Button variant="primary" onClick={() => void startMerchants()} disabled={busy}>
+                  从 PriceAI 同步商家
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => {
+                    setPlatformFilter('all')
+                    setScrapableOnly(false)
+                    setWithoutShopProducts(false)
+                    setHealthFilter('all')
+                    setQ('')
+                  }}
+                >
+                  清除筛选
+                </Button>
+              )
             }
           >
-            商家主档来自 PriceAI，只需同步一次，之后按需更新。
+            {platformFilter === SHOP_PLATFORM_OTHER
+              ? '「其他」为非链动/catfk 等未注册发卡站；不要与「仅可深刮」同时开启。'
+              : platformFilter !== 'all' ||
+                  scrapableOnly ||
+                  withoutShopProducts ||
+                  healthFilter !== 'all' ||
+                  debouncedQ
+                ? '试试放宽平台、健康状态或可深刮条件。'
+                : '商家主档来自 PriceAI，只需同步一次，之后按需更新。'}
           </Empty>
         </div>
       ) : (
@@ -345,9 +410,12 @@ export function MerchantsPage(): React.JSX.Element {
                           aria-label={`勾选 ${m.name}`}
                         />
                       </td>
-                      <td>
+                      <td title={m.id}>
                         <div className="ellipsis" style={{ maxWidth: 260 }}>
                           {m.name}
+                        </div>
+                        <div className="faint small mono ellipsis" style={{ maxWidth: 260 }}>
+                          {merchantSubline(m)}
                         </div>
                       </td>
                       <td className="nowrap">

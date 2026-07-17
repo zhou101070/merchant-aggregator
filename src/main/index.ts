@@ -15,6 +15,7 @@ import { registerIpcHandlers } from './ipc/register'
 import { SyncOrchestrator } from './services/sync-orchestrator'
 import { SearchService } from './services/search-service'
 import { createLogger } from './utils/logger'
+import { ensureSystemProxy } from './utils/main-fetch'
 
 const log = createLogger('main')
 
@@ -178,6 +179,7 @@ app.whenReady().then(() => {
     return
   }
 
+  void ensureSystemProxy()
   createWindow()
 
   app.on('activate', function () {

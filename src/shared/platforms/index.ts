@@ -1,4 +1,11 @@
-export { CATFK_PROFILE, LDXP_PROFILE, SHOP_PROFILES, scrapableShopHosts } from './shop-profiles'
+export {
+  CATFK_PROFILE,
+  LDXP_PROFILE,
+  SHOP_PLATFORM_OTHER,
+  SHOP_PROFILES,
+  knownShopPlatformIds,
+  scrapableShopHosts
+} from './shop-profiles'
 export type {
   ShopApiEndpoints,
   ShopFamily,

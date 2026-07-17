@@ -1,7 +1,15 @@
 import type { AppSettings } from './types/settings'
 
-/** Default identifiable UA for PriceAI (merchants only). */
-export const DEFAULT_PRICEAI_UA = 'MerchantAggregator/1.0 (+personal-research; contact: local-user)'
+/**
+ * Default PriceAI UA override in settings.
+ * Empty → main process uses resolveRequestUserAgent() (desktop Chrome).
+ * Non-empty custom string is sent as-is.
+ */
+export const DEFAULT_PRICEAI_UA = ''
+
+/** Pre-unification identifiable UA; treated as empty by resolveRequestUserAgent. */
+export const LEGACY_IDENTIFIABLE_PRICEAI_UA =
+  'MerchantAggregator/1.0 (+personal-research; contact: local-user)'
 
 export const DEFAULT_ALLOWLIST_HOSTS = [
   'priceai.cc',

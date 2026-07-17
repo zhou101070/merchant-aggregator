@@ -57,6 +57,28 @@ export interface SyncStatus {
   }
 }
 
+/** History list filter — `running` means pending+running */
+export type SyncHistoryStatusFilter =
+  | 'all'
+  | 'running'
+  | 'succeeded'
+  | 'partial'
+  | 'failed'
+  | 'cancelled'
+
+export interface SyncJobListQuery {
+  status?: SyncHistoryStatusFilter
+  offset?: number
+  limit?: number
+}
+
+export interface SyncJobListResult {
+  rows: SyncJobRecord[]
+  total: number
+  offset: number
+  limit: number
+}
+
 export interface SyncStartRequest {
   jobType: SyncJobType
   merchantId?: string

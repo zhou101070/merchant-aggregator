@@ -59,6 +59,14 @@ function s(v: string | null | undefined): string | null {
   return t.length ? t : null
 }
 
+/** 有可打开外链：shop_url 或 entry_url 任一非空 */
+export function hasMerchantExternalLink(row: {
+  shop_url?: string | null
+  entry_url?: string | null
+}): boolean {
+  return !!(row.shop_url?.trim() || row.entry_url?.trim())
+}
+
 export interface DerivedShopRef {
   shop_platform: string
   shop_token: string

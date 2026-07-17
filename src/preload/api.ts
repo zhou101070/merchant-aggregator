@@ -23,6 +23,9 @@ export function createRendererApi(): RendererApi {
       start: (req) => ipcRenderer.invoke(IPC_CHANNELS.syncStart, req),
       cancel: (jobId) => ipcRenderer.invoke(IPC_CHANNELS.syncCancel, { jobId }),
       status: () => ipcRenderer.invoke(IPC_CHANNELS.syncStatus),
+      listJobs: (q) => ipcRenderer.invoke(IPC_CHANNELS.syncListJobs, q ?? {}),
+      deleteJob: (jobId) => ipcRenderer.invoke(IPC_CHANNELS.syncDeleteJob, { jobId }),
+      clearHistory: () => ipcRenderer.invoke(IPC_CHANNELS.syncClearHistory),
       onProgress: (cb) => {
         const listener = (_event: Electron.IpcRendererEvent, payload: SyncProgressEvent): void => {
           cb(payload)

@@ -1,5 +1,9 @@
 import type Database from 'better-sqlite3'
 import { likeContains, tokenizeQuery } from '@shared/lib/search-query'
+import {
+  knownShopPlatformIds,
+  SHOP_PLATFORM_OTHER
+} from '@shared/platforms/shop-profiles'
 import type { Merchant, MerchantCandidates, MerchantListQuery } from '@shared/types/merchant'
 import type { NormalizedMerchantRow } from '../../platforms/priceai/normalize'
 
@@ -427,6 +431,30 @@ export class MerchantsRepo {
     return tx(rows)
   }
 
+  /**
+   * Drop merchants with no openable external link (both shop_url and entry_url empty).
+   * Also removes merchant favorites / recent_views for those ids.
+   */
+  deleteWithoutExternalLinks(): number {
+    const noLink = `(shop_url IS NULL OR shop_url = '') AND (entry_url IS NULL OR entry_url = '')`
+    const idSub = `SELECT id FROM merchants WHERE ${noLink}`
+    const run = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `DELETE FROM favorites WHERE target_type = 'merchant' AND target_id IN (${idSub})`
+        )
+        .run()
+      this.db
+        .prepare(
+          `DELETE FROM recent_views WHERE target_type = 'merchant' AND target_id IN (${idSub})`
+        )
+        .run()
+      const info = this.db.prepare(`DELETE FROM merchants WHERE ${noLink}`).run()
+      return info.changes
+    })
+    return run()
+  }
+
   list(query: MerchantListQuery): { rows: Merchant[]; total: number } {
     const where: string[] = []
     const params: Record<string, unknown> = {}
@@ -463,6 +491,42 @@ export class MerchantsRepo {
         return `platforms_json LIKE @${key}`
       })
       where.push(`(${parts.join(' OR ')})`)
+    }
+    if (query.shopPlatforms?.length) {
+      const wantOther = query.shopPlatforms.includes(SHOP_PLATFORM_OTHER)
+      const explicit = query.shopPlatforms.filter((p) => p !== SHOP_PLATFORM_OTHER)
+      const parts: string[] = []
+      if (explicit.length) {
+        const keys = explicit.map((p, i) => {
+          const key = `sp${i}`
+          params[key] = p
+          return `@${key}`
+        })
+        parts.push(`shop_platform IN (${keys.join(',')})`)
+      }
+      if (wantOther) {
+        // Align with mapRow dual-fill: ldxp_token without shop_platform counts as ldxp, not other.
+        const known = knownShopPlatformIds()
+        if (known.length) {
+          const keys = known.map((id, i) => {
+            const key = `spk${i}`
+            params[key] = id
+            return `@${key}`
+          })
+          parts.push(
+            `(
+              (shop_platform IS NOT NULL AND shop_platform != '' AND shop_platform NOT IN (${keys.join(',')}))
+              OR (
+                (shop_platform IS NULL OR shop_platform = '')
+                AND (ldxp_token IS NULL OR ldxp_token = '')
+              )
+            )`
+          )
+        } else {
+          parts.push(`(shop_platform IS NULL OR shop_platform = '') AND (ldxp_token IS NULL OR ldxp_token = '')`)
+        }
+      }
+      if (parts.length) where.push(`(${parts.join(' OR ')})`)
     }
     if (query.scrapableOnly || query.ldxpOnly) {
       where.push(SCRAPABLE_SQL)

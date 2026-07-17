@@ -429,7 +429,7 @@ export class SyncOrchestrator {
     signal: AbortSignal,
     client: PriceaiClient,
     intervalMs: number
-  ): Promise<Awaited<ReturnType<typeof fetchAllMerchants>>> {
+  ): Promise<Awaited<ReturnType<typeof fetchAllMerchants>> & { deletedNoLink: number }> {
     const result = await fetchAllMerchants({
       client,
       intervalMs,
@@ -438,7 +438,8 @@ export class SyncOrchestrator {
         this.progress(jobId, jobType, 'merchants', p.current, p.total, `page ${p.page}`)
     })
     this.repos.merchants.upsertMany(result.rows)
-    return result
+    const deletedNoLink = this.repos.merchants.deleteWithoutExternalLinks()
+    return { ...result, deletedNoLink }
   }
 
   private async runMerchants(
@@ -454,8 +455,14 @@ export class SyncOrchestrator {
       'merchants',
       result.rows.length,
       result.total,
-      `upserted ${result.rows.length}`,
-      { pages: result.pages, generatedAt: result.generatedAt }
+      `upserted ${result.rows.length}, dropped no-link ${result.droppedNoLink}, deleted stale ${result.deletedNoLink}`,
+      {
+        pages: result.pages,
+        generatedAt: result.generatedAt,
+        fetchedUnique: result.fetchedUnique,
+        droppedNoLink: result.droppedNoLink,
+        deletedNoLink: result.deletedNoLink
+      }
     )
   }
 
@@ -474,6 +481,8 @@ export class SyncOrchestrator {
       platformId: string
       token: string
       message: string
+      code?: string
+      details?: unknown
     }[] = []
     const total = targets.length
 
@@ -524,11 +533,15 @@ export class SyncOrchestrator {
         failed += 1
         done += 1
         const message = err instanceof Error ? err.message : String(err)
+        const code = err instanceof AppError ? err.code : 'INTERNAL'
+        const details = err instanceof AppError ? err.details : undefined
         errors.push({
           merchantId: target.merchantId,
           platformId: target.platformId,
           token: target.token,
-          message
+          message,
+          code,
+          details
         })
         if (target.merchantId) {
           this.repos.merchants.setAppHealth(target.merchantId, 'failing', message)
@@ -543,7 +556,9 @@ export class SyncOrchestrator {
         log.warn('shop scrape failed', {
           platformId: target.platformId,
           token: target.token,
-          message
+          code,
+          message,
+          details
         })
       }
     }
@@ -645,6 +660,7 @@ export class SyncOrchestrator {
   private finishError(jobId: string, jobType: SyncJobType, err: unknown): void {
     const code: AppErrorCode = err instanceof AppError ? err.code : 'INTERNAL'
     const message = err instanceof Error ? err.message : String(err)
+    const details = err instanceof AppError ? err.details : undefined
     const status = code === 'CANCELLED' ? 'cancelled' : 'failed'
     const finishedAt = new Date().toISOString()
     const prev = this.repos.syncJobs.get(jobId)
@@ -652,7 +668,11 @@ export class SyncOrchestrator {
       status,
       message,
       errorCode: code,
-      finishedAt
+      finishedAt,
+      meta: {
+        ...(prev?.meta ?? {}),
+        failure: { code, message, details }
+      }
     })
     this.emitProgress({
       jobId,
@@ -664,7 +684,7 @@ export class SyncOrchestrator {
       status,
       errorCode: code
     })
-    log.warn('sync ended', { jobId, jobType, status, code, message })
+    log.warn('sync ended', { jobId, jobType, status, code, message, details })
   }
 
   private emitProgress(event: SyncProgressEvent): void {

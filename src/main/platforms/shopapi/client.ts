@@ -4,13 +4,16 @@ import type { ShopSiteProfile } from '@shared/platforms/shop-types'
 import { resolveShopApiEndpoints, shopRootUrl } from '@shared/platforms/shop-types'
 import { LDXP_LIMITS } from '@shared/constants'
 import { createLogger } from '../../utils/logger'
+import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
 import { sleep } from '../../services/rate-limiter'
+import {
+  browserCorsApiHeaders,
+  browserDocumentHeaders,
+  resolveRequestUserAgent
+} from '../../utils/request-headers'
 import { isShopApiChallengeResponse } from './challenge'
 
 const log = createLogger('shopapi')
-
-const DEFAULT_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 export function createVisitorId(): string {
   return randomBytes(8).toString('hex')
@@ -56,7 +59,7 @@ export class ShopApiClient {
   ) {
     this.profile = profile
     this.visitorId = options?.visitorId ?? createVisitorId()
-    this.ua = options?.userAgent ?? DEFAULT_UA
+    this.ua = resolveRequestUserAgent(options?.userAgent)
     this.minIntervalMs = options?.minIntervalMs ?? profile.defaultMinIntervalMs
   }
 
@@ -122,20 +125,17 @@ export class ShopApiClient {
   ): Promise<T> {
     await this.throttle()
     const url = `${this.profile.baseUrl}${path}`
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/plain, */*',
-      Origin: this.profile.baseUrl,
-      Referer: shopRootUrl(this.profile, token),
-      'User-Agent': this.ua,
-      Visitorid: this.visitorId
-    }
-    const cookie = this.cookieHeader()
-    if (cookie) headers.Cookie = cookie
+    const headers = browserCorsApiHeaders({
+      userAgent: this.ua,
+      origin: this.profile.baseUrl,
+      referer: shopRootUrl(this.profile, token),
+      visitorId: this.visitorId,
+      cookie: this.cookieHeader()
+    })
 
     let res: Response
     try {
-      res = await fetch(url, {
+      res = await mainFetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body)
@@ -143,7 +143,9 @@ export class ShopApiClient {
     } catch (err) {
       throw new AppError('NETWORK', `shop fetch failed: ${String(err)}`, {
         path,
-        platformId: this.profile.id
+        platformId: this.profile.id,
+        url,
+        ...fetchErrorDetails(err)
       })
     }
 
@@ -194,14 +196,11 @@ export class ShopApiClient {
   async warmup(token: string): Promise<void> {
     await this.throttle()
     try {
-      const res = await fetch(shopRootUrl(this.profile, token), {
-        headers: {
-          'User-Agent': this.ua,
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          Visitorid: this.visitorId
-        }
+      const res = await mainFetch(shopRootUrl(this.profile, token), {
+        headers: browserDocumentHeaders({
+          userAgent: this.ua,
+          visitorId: this.visitorId
+        })
       })
       this.absorbSetCookie(res)
       const text = await res.text()
@@ -232,7 +231,7 @@ export class ShopApiClient {
       if (err instanceof AppError && (err.code === 'NEED_BROWSER' || err.code === 'NETWORK')) {
         throw err
       }
-      log.warn('warmup failed (continuing)', err)
+      log.warn('warmup failed (continuing)', { ...fetchErrorDetails(err) })
     }
   }
 

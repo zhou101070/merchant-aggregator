@@ -1,6 +1,6 @@
-import { DEFAULT_PRICEAI_UA } from '@shared/constants'
 import { AppError } from '@shared/types/errors'
 import { HttpClient } from '../../services/http-client'
+import { resolveRequestUserAgent } from '../../utils/request-headers'
 import { priceaiMerchantsPageSchema } from './zod'
 import type { PriceaiMerchantsPageParsed } from './zod'
 
@@ -8,6 +8,7 @@ export const PRICEAI_BASE_URL = 'https://priceai.cc'
 
 export interface PriceaiClientOptions {
   baseUrl?: string
+  /** Empty / omit → desktop Chrome UA (same resolver as shopApi). */
   userAgent?: string
   http?: HttpClient
 }
@@ -22,7 +23,7 @@ export class PriceaiClient {
     this.http =
       options.http ??
       new HttpClient({
-        userAgent: options.userAgent ?? DEFAULT_PRICEAI_UA
+        userAgent: resolveRequestUserAgent(options.userAgent)
       })
   }
 
