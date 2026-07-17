@@ -277,6 +277,9 @@ export class SearchService {
   }
 
   private appendFilters(req: SearchQuery, where: string[], params: Record<string, unknown>): void {
+    // 首页搜索屏蔽 ≤ hidePriceAtOrBelow 的占位/垃圾价(null 保留)
+    where.push(`(s.price IS NULL OR s.price > @hidePriceAtOrBelow)`)
+    params.hidePriceAtOrBelow = SEARCH_DEFAULTS.hidePriceAtOrBelow
     if (req.inStockOnly) {
       where.push(`(s.stock IS NOT NULL AND s.stock > 0)`)
     }

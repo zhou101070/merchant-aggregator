@@ -50,7 +50,9 @@ export const RATE_LIMITS = {
 
 export const SEARCH_DEFAULTS = {
   limit: 50,
-  offset: 0
+  offset: 0,
+  /** 搜索结果屏蔽该价及以下(占位/垃圾 SKU),仅作用于 SearchService */
+  hidePriceAtOrBelow: 0.02
 } as const
 
 /** Page size for shopApi-family goodsList (all shopApi profiles). */

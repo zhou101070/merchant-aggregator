@@ -305,6 +305,55 @@ describe('SearchService local-only shop_products', () => {
     }
   })
 
+  it('hides prices at or below 0.02', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: '占位 0.01',
+          price: 0.01
+        },
+        {
+          id: 's2',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g2',
+          title: '占位 0.02',
+          price: 0.02
+        },
+        {
+          id: 's3',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g3',
+          title: '正常 0.03',
+          price: 0.03
+        },
+        {
+          id: 's4',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g4',
+          title: '正常 1',
+          price: 1
+        }
+      ])
+
+      const search = new SearchService(db)
+      const res = search.query({ q: '', sort: 'price', sortDir: 'asc' })
+      const prices = res.hits.map((h) => h.price)
+      expect(prices).toEqual([0.03, 1])
+      expect(res.total).toBe(2)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
   it('titleContains excludes negated terms (非/不含 Plus)', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {

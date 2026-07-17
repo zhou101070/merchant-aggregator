@@ -1290,6 +1290,8 @@ dialog.dialog[open] {
 /* 页面根占满可视区,配合 .panel-fill 让列表内滚 */
 .page-viewport {
   height: calc(100vh - 52px);
+  min-height: 0;
+  overflow: hidden;
 }
 .panel-fill {
   display: flex;
@@ -1308,6 +1310,8 @@ dialog.dialog[open] {
 }
 .split.panel-fill {
   min-height: 0;
+  /* 单行撑满面板高度,子项 min-height:0 才能各自 overflow 内滚 */
+  grid-template-rows: minmax(0, 1fr);
 }
 .split > * {
   min-height: 0;
@@ -1323,11 +1327,48 @@ dialog.dialog[open] {
 .detail-pane {
   border-left: 1px solid var(--border);
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  /* 头信息固定,商品表在 .detail-products 内滚 */
+  overflow: hidden;
   padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+/* 覆盖 .panel { overflow:hidden },占满详情剩余高度;表体单独内滚 */
+.detail-pane > .detail-products {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.detail-pane > .detail-products > .panel-head {
+  flex-shrink: 0;
+}
+.detail-pane > .detail-products > :not(.panel-head) {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+/* 后三列完整显示,标题列吃剩余宽度并省略 */
+.detail-products .table {
+  table-layout: fixed;
+}
+.detail-products .table .col-title {
+  width: auto;
+  min-width: 0;
+}
+.detail-products .table .col-price {
+  width: 5.75rem;
+  white-space: nowrap;
+}
+.detail-products .table .col-stock {
+  width: 3.25rem;
+  white-space: nowrap;
+}
+.detail-products .table td.col-title .ellipsis {
+  max-width: 100%;
 }
 .detail-title {
   margin: 0;

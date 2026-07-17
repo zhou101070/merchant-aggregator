@@ -511,7 +511,7 @@ export function MerchantsPage(): React.JSX.Element {
                 </div>
               ) : null}
 
-              <div className="panel" style={{ boxShadow: 'none' }}>
+              <div className="panel detail-products" style={{ boxShadow: 'none' }}>
                 <div className="panel-head">
                   <strong>店内商品</strong>
                   <span className="sub">
@@ -529,25 +529,25 @@ export function MerchantsPage(): React.JSX.Element {
                     <table className="table">
                       <thead>
                         <tr>
-                          <th>商品</th>
-                          <th className="num">价格</th>
-                          <th className="num">库存</th>
-                          <th></th>
+                          <th className="col-title">商品</th>
+                          <th className="num col-price">价格</th>
+                          <th className="num col-stock">库存</th>
+                          <th className="col-actions"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {shopProducts.map((p) => (
                           <tr key={p.id}>
-                            <td>
-                              <div className="ellipsis" style={{ maxWidth: 200 }} title={p.title}>
+                            <td className="col-title">
+                              <div className="ellipsis" title={p.title}>
                                 {p.title}
                               </div>
                             </td>
-                            <td className="num">
+                            <td className="num col-price">
                               <Price price={p.price} currency={p.currency} />
                             </td>
-                            <td className="num mono">{p.stock ?? '—'}</td>
-                            <td>
+                            <td className="num mono col-stock">{p.stock ?? '—'}</td>
+                            <td className="col-actions">
                               <IconButton
                                 label="打开源站"
                                 onClick={() => void openExternalSafe(p.sourceUrl)}
