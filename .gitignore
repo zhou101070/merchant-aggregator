@@ -1,0 +1,16 @@
+# Dependencies & build output
+node_modules
+dist
+out
+*.tsbuildinfo
+
+# Caches & logs
+.DS_Store
+.eslintcache
+*.log*
+
+# Local agent / editor tool dirs
+.claude
+.codex
+.cursor
+.impeccable

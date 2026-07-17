@@ -1,0 +1,127 @@
+/*
+ * tokens.css — 唯一的设计令牌事实源(见 DESIGN.md §3–§6)
+ * 双主题经 light-dark() 跟随系统;组件样式只允许引用这里的令牌。
+ */
+:root {
+  color-scheme: light dark;
+
+  /* ---- 中性层(石墨,向黄铜色相微偏) ---- */
+  --bg-sunken: light-dark(oklch(0.955 0.004 85), oklch(0.135 0.004 80));
+  --bg: light-dark(oklch(0.975 0.003 85), oklch(0.165 0.005 80));
+  --bg-raised: light-dark(oklch(0.995 0.002 85), oklch(0.19 0.006 80));
+  --bg-overlay: light-dark(oklch(1 0 0), oklch(0.215 0.007 80));
+  --bg-hover: light-dark(oklch(0.22 0.012 85 / 4%), oklch(0.93 0.007 85 / 5%));
+  --border: light-dark(oklch(0.9 0.006 85), oklch(0.28 0.008 85));
+  --border-strong: light-dark(oklch(0.82 0.008 85), oklch(0.36 0.01 85));
+  --ink: light-dark(oklch(0.22 0.012 85), oklch(0.93 0.007 85));
+  --ink-2: light-dark(oklch(0.44 0.014 85), oklch(0.7 0.01 85));
+  --ink-3: light-dark(oklch(0.5 0.014 85), oklch(0.64 0.01 85));
+  --ink-4: light-dark(oklch(0.68 0.01 85), oklch(0.48 0.008 85));
+
+  /* ---- 黄铜(唯一 accent,使用白名单见 DESIGN.md §3.2) ---- */
+  --accent: light-dark(oklch(0.67 0.125 80), oklch(0.8 0.125 84));
+  --accent-hover: light-dark(oklch(0.63 0.125 80), oklch(0.84 0.125 84));
+  --accent-ink: light-dark(oklch(0.22 0.03 80), oklch(0.23 0.04 84));
+  --accent-text: light-dark(oklch(0.47 0.11 78), oklch(0.8 0.125 84));
+  --accent-edge: light-dark(oklch(0.52 0.11 78), transparent);
+  --accent-wash: light-dark(oklch(0.55 0.12 78 / 9%), oklch(0.8 0.125 84 / 10%));
+  --focus: light-dark(oklch(0.55 0.12 78), oklch(0.8 0.125 84));
+
+  /* ---- 语义色 ---- */
+  --ok: light-dark(oklch(0.5 0.13 155), oklch(0.76 0.14 155));
+  --ok-wash: light-dark(oklch(0.5 0.13 155 / 10%), oklch(0.76 0.14 155 / 12%));
+  --danger: light-dark(oklch(0.5 0.18 27), oklch(0.72 0.16 25));
+  --danger-wash: light-dark(oklch(0.5 0.18 27 / 9%), oklch(0.72 0.16 25 / 12%));
+  --warn: light-dark(oklch(0.51 0.12 60), oklch(0.76 0.13 60));
+  --warn-wash: light-dark(oklch(0.51 0.12 60 / 10%), oklch(0.76 0.13 60 / 12%));
+
+  /* ---- 字体排印 ---- */
+  --font-ui:
+    -apple-system, 'SF Pro Text', 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', system-ui,
+    sans-serif;
+  --font-data: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-xs: 11px;
+  --text-s: 12px;
+  --text-m: 13px;
+  --text-l: 14px;
+  --text-xl: 16px;
+  --text-2xl: 20px;
+
+  /* ---- 圆角 ---- */
+  --radius-xs: 4px;
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 14px;
+
+  /* ---- 阴影(深色主题层次主要靠 surface 阶梯 + 边框) ---- */
+  --shadow-1: 0 1px 2px light-dark(oklch(0.2 0.02 85 / 6%), oklch(0 0 0 / 25%));
+  --shadow-2: 0 4px 16px light-dark(oklch(0.15 0.02 85 / 14%), oklch(0 0 0 / 40%));
+  --shadow-3: 0 16px 48px light-dark(oklch(0.1 0.02 85 / 22%), oklch(0 0 0 / 55%));
+
+  /* ---- z 层级刻度 ---- */
+  --z-sticky: 10;
+  --z-widget: 20;
+  --z-drawer: 30;
+  --z-backdrop: 40;
+  --z-dialog: 50;
+  --z-toast: 60;
+
+  /* ---- 动效 ---- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 280ms;
+
+  font-family: var(--font-ui);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* ---- 基础重置 ---- */
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-size: var(--text-m);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+a {
+  color: inherit;
+}
+::selection {
+  background: light-dark(oklch(0.67 0.125 80 / 25%), oklch(0.8 0.125 84 / 30%));
+}
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+/* 输入域的环贴边框,避免双环感 */
+input:focus-visible,
+textarea:focus-visible {
+  outline-offset: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}
