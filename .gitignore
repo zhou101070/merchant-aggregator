@@ -4,6 +4,11 @@ dist
 out
 *.tsbuildinfo
 
+# Local secrets / env keys (keep .env.example)
+.env
+.env.*
+!.env.example
+
 # Caches & logs
 .DS_Store
 .eslintcache
