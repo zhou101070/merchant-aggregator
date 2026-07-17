@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import type { SearchHit } from '@shared/types/search'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import { SEARCH_DEFAULTS } from '@shared/constants'
+import { pushRecentSearch } from '@shared/lib/recent-searches'
+import { defaultName, pushSavedSearch, removeSavedSearch } from '@shared/lib/saved-searches'
+import type { SavedSearch } from '@shared/types/saved-search'
+import type { SearchHit, SearchQuery } from '@shared/types/search'
+import { normalizeWordList } from '@shared/types/settings'
 import type { MerchantCandidates } from '@shared/types/merchant'
 import {
   Button,
@@ -15,7 +20,9 @@ import {
   SkeletonRows,
   StatusDot
 } from '../components/ui'
+import { CompareDrawer } from '../components/compare-drawer'
 import { Pagination } from '../components/pagination'
+import { CopyLinkButton } from '../components/copy-link-button'
 import { Icon } from '../components/icons'
 import { useConfirm } from '../components/use-confirm'
 import { useToast } from '../components/use-toast'
@@ -25,10 +32,63 @@ import { highlightText } from '../lib/highlight'
 import { openExternalSafe } from '../lib/open-external'
 import { isStale, timeAgo } from '../lib/format-time'
 import { searchHotkeyLabel } from '../lib/mod-key'
+import { resolveShopRef } from '../lib/shop-ref'
 
 const SPEC_CHIPS = ['质保', '直登', '成品', 'Pro', 'Plus', '邮箱', 'Claude', 'GPT']
+const EXCLUDE_SUGGEST = ['共享', '合租', '拼车', '出租']
 const PAGE_SIZE_OPTIONS = [50, 100, 200] as const
 const DEFAULT_PAGE_SIZE = 100
+
+function parsePriceInput(raw: string): number | undefined {
+  const t = raw.trim()
+  if (!t) return undefined
+  const n = Number(t)
+  return Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
+type SortKey = NonNullable<SearchQuery['sort']>
+type SortDir = NonNullable<SearchQuery['sortDir']>
+
+/** 首次点某列时的默认方向 */
+function defaultDirFor(key: SortKey): SortDir {
+  if (key === 'price' || key === 'stock' || key === 'title' || key === 'merchant') return 'asc'
+  if (key === 'fetchedAt') return 'desc'
+  return 'desc'
+}
+
+function SortTh({
+  label,
+  col,
+  sort,
+  sortDir,
+  onSort,
+  className
+}: {
+  label: string
+  col: SortKey
+  sort: SortKey
+  sortDir: SortDir
+  onSort: (col: SortKey) => void
+  className?: string
+}): React.JSX.Element {
+  const active = sort === col
+  const mark = active ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+  return (
+    <th className={className}>
+      <button
+        type="button"
+        className={`th-sort${active ? ' on' : ''}`}
+        onClick={() => onSort(col)}
+        aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      >
+        {label}
+        <span className="th-sort-mark" aria-hidden>
+          {mark || ' ↕'}
+        </span>
+      </button>
+    </th>
+  )
+}
 
 function healthTone(h: string | null | undefined): 'ok' | 'fail' | 'warn' | 'default' {
   if (h === 'healthy') return 'ok'
@@ -90,10 +150,11 @@ function CandidatesCta({
 }
 
 export function SearchPage(): React.JSX.Element {
-  const { start, startBootstrap, startMerchants, startLdxpSelected, busy, status, progress } =
+  const { start, startBootstrap, startMerchants, startShopSelected, busy, status, progress } =
     useSyncStatus()
   const confirm = useConfirm()
   const toast = useToast()
+  const location = useLocation()
   const [searchParams] = useSearchParams()
   const [q, setQ] = useState(() => searchParams.get('q') ?? '')
   const [debounced, setDebounced] = useState(() => (searchParams.get('q') ?? '').trim())
@@ -113,11 +174,14 @@ export function SearchPage(): React.JSX.Element {
   const [inStockOnly, setInStockOnly] = useState(false)
   const [merchantName, setMerchantName] = useState<string | undefined>()
   const [titleContains, setTitleContains] = useState<string[]>([])
-  const [sort, setSort] = useState<'score' | 'price'>('score')
+  const [titleExcludes, setTitleExcludes] = useState<string[]>([])
+  const [excludeDraft, setExcludeDraft] = useState('')
+  const [priceMinText, setPriceMinText] = useState('')
+  const [priceMaxText, setPriceMaxText] = useState('')
+  const [sort, setSort] = useState<SortKey>('score')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [facets, setFacets] = useState<Record<string, { value: string; count: number }[]>>({})
-  const [compareRows, setCompareRows] = useState<SearchHit[] | null>(null)
-  const [compareTitle, setCompareTitle] = useState('')
-  const [compareNotice, setCompareNotice] = useState<string | null>(null)
+  const [compareTitle, setCompareTitle] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
@@ -126,10 +190,20 @@ export function SearchPage(): React.JSX.Element {
     data: MerchantCandidates
   } | null>(null)
   const [freshHours, setFreshHours] = useState(24)
+  const [recentSearches, setRecentSearches] = useState<string[]>([])
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([])
   const [selectedIdx, setSelectedIdx] = useState(-1)
   const searchSeq = useRef(0)
+  const lastRecordedQ = useRef('')
 
   const merchants = status?.counts.merchants ?? 0
+  // min>max 时交换，避免静默空结果
+  const priceMinRaw = parsePriceInput(priceMinText)
+  const priceMaxRaw = parsePriceInput(priceMaxText)
+  const priceRangeSwapped = priceMinRaw != null && priceMaxRaw != null && priceMinRaw > priceMaxRaw
+  const priceMin = priceRangeSwapped ? priceMaxRaw : priceMinRaw
+  const priceMax = priceRangeSwapped ? priceMinRaw : priceMaxRaw
+  const toolbarSort: 'score' | 'price' | null = sort === 'score' || sort === 'price' ? sort : null
 
   const highlightQuery = useMemo(
     () => [debounced, ...titleContains].filter(Boolean).join(' '),
@@ -137,13 +211,29 @@ export function SearchPage(): React.JSX.Element {
   )
 
   useEffect(() => {
-    void window.api.settings.get().then((s) => setFreshHours(s.shopFreshHours || 24))
+    void window.api.settings.get().then((s) => {
+      setFreshHours(s.shopFreshHours || 24)
+      setRecentSearches(s.recentSearches ?? [])
+      setSavedSearches(s.savedSearches ?? [])
+      setTitleExcludes(normalizeWordList(s.searchExcludeWords ?? []))
+    })
   }, [])
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q.trim()), 250)
     return () => clearTimeout(t)
   }, [q])
+
+  // 有效搜索词写入最近历史（读最新 settings，避免并发丢词）
+  useEffect(() => {
+    if (!debounced || debounced === lastRecordedQ.current) return
+    lastRecordedQ.current = debounced
+    void window.api.settings.get().then((s) => {
+      const next = pushRecentSearch(s.recentSearches, debounced)
+      setRecentSearches(next)
+      return window.api.settings.set({ recentSearches: next })
+    })
+  }, [debounced])
 
   const doSearch = useCallback(
     async (offset: number) => {
@@ -153,10 +243,13 @@ export function SearchPage(): React.JSX.Element {
         const res = await window.api.search.query({
           q: debounced,
           inStockOnly: inStockOnly || undefined,
+          priceMin,
+          priceMax,
           merchantName,
           titleContains: titleContains.length ? titleContains : undefined,
+          titleExcludes: titleExcludes.length ? titleExcludes : undefined,
           sort,
-          sortDir: sort === 'price' ? 'asc' : 'desc',
+          sortDir,
           limit: pageSize,
           offset
         })
@@ -170,7 +263,18 @@ export function SearchPage(): React.JSX.Element {
         if (seq === searchSeq.current) setLoading(false)
       }
     },
-    [debounced, inStockOnly, merchantName, titleContains, sort, pageSize]
+    [
+      debounced,
+      inStockOnly,
+      priceMin,
+      priceMax,
+      merchantName,
+      titleContains,
+      titleExcludes,
+      sort,
+      sortDir,
+      pageSize
+    ]
   )
 
   // 任何同步任务落定后重搜(新鲜度/新店数据即时反映)
@@ -180,7 +284,7 @@ export function SearchPage(): React.JSX.Element {
       : ''
 
   // 筛选/pageSize 变化时先回第 0 页再搜，避免用旧 page 打错 offset
-  const filterKey = `${debounced}\0${inStockOnly}\0${merchantName ?? ''}\0${titleContains.join('\0')}\0${sort}\0${pageSize}`
+  const filterKey = `${debounced}\0${inStockOnly}\0${priceMin ?? ''}\0${priceMax ?? ''}\0${merchantName ?? ''}\0${titleContains.join('\0')}\0${titleExcludes.join('\0')}\0${sort}\0${sortDir}\0${pageSize}`
   const prevFilterKey = useRef(filterKey)
   useEffect(() => {
     const filtersChanged = prevFilterKey.current !== filterKey
@@ -221,9 +325,15 @@ export function SearchPage(): React.JSX.Element {
   }, [wantCandidates, debounced, syncTick])
   const candidates = wantCandidates && candidatesFor?.key === debounced ? candidatesFor.data : null
 
-  /** 无关键词/规格/店名筛选；有商品时应浏览列表，仅在无命中时才用起始态 */
+  /** 无关键词/规格/店名/价格/排除筛选；有商品时应浏览列表，仅在无命中时才用起始态 */
   const isBrowseIdle =
-    !debounced && !titleContains.length && !merchantName && !inStockOnly
+    !debounced &&
+    !titleContains.length &&
+    !titleExcludes.length &&
+    !merchantName &&
+    !inStockOnly &&
+    priceMin == null &&
+    priceMax == null
   const showStart = isBrowseIdle && !emptyReason && !loading && hits.length === 0
 
   const openHit = useCallback(async (hit: SearchHit): Promise<void> => {
@@ -236,32 +346,43 @@ export function SearchPage(): React.JSX.Element {
   }, [])
 
   const closeCompare = useCallback((): void => {
-    setCompareRows(null)
-    setCompareNotice(null)
+    setCompareTitle(null)
   }, [])
 
   // 键盘流：↑↓ 选行，Enter 打开源站，Esc 关抽屉/取消选择
+  // KeepAlive 会保留本页挂载；必须按路由与可编辑焦点门控，避免其它页误触 openHit。
   useEffect(() => {
+    if (location.pathname !== '/') return
     const onKey = (e: KeyboardEvent): void => {
+      const el = e.target
+      if (el instanceof HTMLElement) {
+        const tag = el.tagName
+        const inEditable =
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          el.isContentEditable
+        if (inEditable && e.key !== 'Escape') return
+      }
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        if (!hits.length) return
+        if (!hits.length || compareTitle) return
         e.preventDefault()
         setSelectedIdx((i) =>
           e.key === 'ArrowDown' ? Math.min(hits.length - 1, i + 1) : Math.max(0, i - 1)
         )
       } else if (e.key === 'Enter') {
-        if (selectedIdx >= 0 && hits[selectedIdx]) {
+        if (selectedIdx >= 0 && hits[selectedIdx] && !compareTitle) {
           e.preventDefault()
           void openHit(hits[selectedIdx])
         }
       } else if (e.key === 'Escape') {
-        if (compareRows) closeCompare()
+        if (compareTitle) closeCompare()
         else setSelectedIdx(-1)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [hits, selectedIdx, openHit, compareRows, closeCompare])
+  }, [hits, selectedIdx, openHit, compareTitle, closeCompare, location.pathname])
 
   useEffect(() => {
     if (selectedIdx < 0) return
@@ -310,27 +431,108 @@ export function SearchPage(): React.JSX.Element {
     }
   }
 
-  async function compare(hit: SearchHit): Promise<void> {
-    const res = await window.api.products.compare({ titleNorm: hit.title })
+  function compare(hit: SearchHit): void {
     setCompareTitle(hit.title)
-    setCompareNotice(res.notice ?? null)
-    setCompareRows(res.rows)
+  }
+
+  function applySaved(s: SavedSearch): void {
+    setQ(s.q)
+    setDebounced(s.q.trim())
+    setTitleContains([...s.titleContains])
+    setTitleExcludes([...s.titleExcludes])
+    setInStockOnly(s.inStockOnly)
+    setPriceMinText(s.priceMin != null ? String(s.priceMin) : '')
+    setPriceMaxText(s.priceMax != null ? String(s.priceMax) : '')
+    setMerchantName(s.merchantName)
+    setSort(s.sort)
+    setSortDir(s.sortDir)
+    setPage(0)
+  }
+
+  async function saveCurrentSearch(): Promise<void> {
+    const snap = {
+      q: debounced,
+      titleContains: [...titleContains],
+      titleExcludes: [...titleExcludes],
+      inStockOnly,
+      priceMin,
+      priceMax,
+      merchantName,
+      sort,
+      sortDir
+    }
+    const hasSignal =
+      Boolean(snap.q) ||
+      snap.titleContains.length > 0 ||
+      snap.titleExcludes.length > 0 ||
+      snap.inStockOnly ||
+      snap.priceMin != null ||
+      snap.priceMax != null ||
+      Boolean(snap.merchantName)
+    if (!hasSignal) {
+      toast('请先输入关键词或筛选条件再保存', 'fail')
+      return
+    }
+    const name = defaultName(snap)
+    const s = await window.api.settings.get()
+    const next = pushSavedSearch(s.savedSearches, snap, name)
+    await window.api.settings.set({ savedSearches: next })
+    setSavedSearches(next)
+    toast(`已保存：${name}`, 'ok')
+  }
+
+  async function deleteSaved(id: string): Promise<void> {
+    const s = await window.api.settings.get()
+    const next = removeSavedSearch(s.savedSearches, id)
+    await window.api.settings.set({ savedSearches: next })
+    setSavedSearches(next)
+    toast('已删除常用搜索', 'ok')
+  }
+
+  async function blockProduct(hit: SearchHit): Promise<void> {
+    if (hit.kind !== 'shop_product') return
+    const targetId = hit.id.replace(/^shop:/, '')
+    await window.api.blocklist.add({
+      targetType: 'shop_product',
+      targetId,
+      titleSnapshot: hit.title
+    })
+    toast('已屏蔽该商品（搜索不再显示）', 'ok')
+    void doSearch(page * pageSize)
+  }
+
+  async function blockMerchant(hit: SearchHit): Promise<void> {
+    if (!hit.merchantId) {
+      toast('该行无商家主档，可改屏蔽商品', 'fail')
+      return
+    }
+    await window.api.blocklist.add({
+      targetType: 'merchant',
+      targetId: hit.merchantId,
+      titleSnapshot: hit.merchantName ?? hit.title
+    })
+    toast('已屏蔽该商家（搜索不再显示其商品）', 'ok')
+    void doSearch(page * pageSize)
   }
 
   function refreshShop(hit: SearchHit): void {
-    const platformId = hit.platformId ?? undefined
-    const token = hit.shopToken ?? hit.ldxpToken ?? undefined
-    if (!platformId || !token) {
+    const ref = resolveShopRef({
+      platformId: hit.platformId,
+      shopToken: hit.shopToken,
+      ldxpToken: hit.ldxpToken,
+      strictPlatform: true
+    })
+    if (!ref) {
       toast('缺少平台信息，无法刷新该店', 'fail')
       return
     }
     // D20: shop_one + platformId + token — never item sourceUrl as shopUrl
     void start('shop_one', {
       merchantId: hit.merchantId ?? undefined,
-      platformId,
-      token
+      platformId: ref.platformId,
+      token: ref.token
     })
-    toast(`正在刷新店铺：${hit.merchantName ?? token}，完成后自动重搜`)
+    toast(`正在刷新店铺：${hit.merchantName ?? ref.token}，完成后自动重搜`)
   }
 
   function toggleChip(chip: string): void {
@@ -339,8 +541,44 @@ export function SearchPage(): React.JSX.Element {
     )
   }
 
+  function setSortKey(key: SortKey): void {
+    if (key === sort) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSort(key)
+      setSortDir(defaultDirFor(key))
+    }
+  }
+
+  /** 顶栏分段：只在 score / price 间切换，切到价格默认升序 */
+  function setSortFromToolbar(key: 'score' | 'price'): void {
+    if (key === sort && key === 'price') {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSort(key)
+    setSortDir(defaultDirFor(key))
+  }
+
+  function persistExcludes(next: string[]): void {
+    const normalized = normalizeWordList(next)
+    setTitleExcludes(normalized)
+    void window.api.settings.set({ searchExcludeWords: normalized })
+  }
+
+  function addExclude(term: string): void {
+    const t = term.trim()
+    if (!t) return
+    setExcludeDraft('')
+    persistExcludes([...titleExcludes, t])
+  }
+
+  function removeExclude(term: string): void {
+    persistExcludes(titleExcludes.filter((c) => c !== term))
+  }
+
   function syncCandidates(ids: string[]): void {
-    void startLdxpSelected(ids)
+    void startShopSelected(ids)
     toast('已开始同步候选店铺，完成后自动重搜')
   }
 
@@ -350,13 +588,6 @@ export function SearchPage(): React.JSX.Element {
   }
 
   const notSynced = emptyReason === 'SHOP_PRODUCTS_NOT_SYNCED'
-  const compareMin = useMemo(() => {
-    if (!compareRows?.length) return null
-    const prices = compareRows
-      .map((r) => r.price)
-      .filter((p): p is number => p != null && Number.isFinite(p))
-    return prices.length >= 2 ? Math.min(...prices) : null
-  }, [compareRows])
 
   return (
     <div className="stack" style={{ gap: 14 }}>
@@ -377,21 +608,121 @@ export function SearchPage(): React.JSX.Element {
         <div className="row" style={{ flexWrap: 'nowrap' }}>
           <Segmented
             label="排序"
-            value={sort}
-            onChange={setSort}
+            value={toolbarSort}
+            onChange={setSortFromToolbar}
             options={[
               { value: 'score', label: '相关度' },
-              { value: 'price', label: '价格 ↑' }
+              {
+                value: 'price',
+                label: sort === 'price' ? (sortDir === 'asc' ? '价格 ↑' : '价格 ↓') : '价格 ↑'
+              }
             ]}
           />
+          {toolbarSort == null ? (
+            <span className="muted small" title="点列头排序；点「相关度」恢复">
+              列排序
+            </span>
+          ) : null}
           <Chip on={inStockOnly} onClick={() => setInStockOnly((v) => !v)}>
             仅有货
           </Chip>
+          <div
+            className="price-range"
+            title={`价格区间（元）；默认隐藏 ≤${SEARCH_DEFAULTS.hidePriceAtOrBelow} 与 ≥${SEARCH_DEFAULTS.hidePriceAtOrAbove} 的价`}
+          >
+            <span className="lab">¥</span>
+            <Input
+              className="price-input"
+              type="number"
+              min={0}
+              step="0.01"
+              placeholder="最低"
+              aria-label="最低价"
+              value={priceMinText}
+              onChange={(e) => setPriceMinText(e.target.value)}
+            />
+            <span className="muted">–</span>
+            <Input
+              className="price-input"
+              type="number"
+              min={0}
+              step="0.01"
+              placeholder="最高"
+              aria-label="最高价"
+              value={priceMaxText}
+              onChange={(e) => setPriceMaxText(e.target.value)}
+            />
+          </div>
+          <Button
+            variant="ghost"
+            size="s"
+            onClick={() => void saveCurrentSearch()}
+            title="保存当前关键词与筛选为常用搜索"
+          >
+            保存当前
+          </Button>
           <IconButton label="导出 CSV" onClick={exportCsv} disabled={!hits.length}>
             <Icon name="download" />
           </IconButton>
         </div>
       </div>
+
+      {savedSearches.length > 0 ? (
+        <div className="filter-bar">
+          <span className="lab">常用</span>
+          {savedSearches.map((s) => (
+            <span key={s.id} className="chip-with-x">
+              <Chip
+                on={false}
+                onClick={() => applySaved(s)}
+                title={[s.q, ...s.titleContains, s.merchantName].filter(Boolean).join(' · ')}
+              >
+                {s.name}
+              </Chip>
+              <button
+                type="button"
+                className="chip-x"
+                aria-label={`删除 ${s.name}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void deleteSaved(s.id)
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {recentSearches.length > 0 ? (
+        <div className="filter-bar">
+          <span className="lab">最近</span>
+          {recentSearches.slice(0, 8).map((term) => (
+            <Chip
+              key={term}
+              on={debounced === term}
+              onClick={() => {
+                setQ(term)
+                setDebounced(term)
+              }}
+            >
+              {term}
+            </Chip>
+          ))}
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => {
+              lastRecordedQ.current = ''
+              setRecentSearches([])
+              void window.api.settings.set({ recentSearches: [] })
+            }}
+          >
+            清除
+          </button>
+        </div>
+      ) : null}
 
       <div className="filter-bar">
         <span className="lab">规格</span>
@@ -400,6 +731,34 @@ export function SearchPage(): React.JSX.Element {
             {chip}
           </Chip>
         ))}
+      </div>
+
+      <div className="filter-bar">
+        <span className="lab">排除</span>
+        {titleExcludes.map((term) => (
+          <Chip key={term} on onClick={() => removeExclude(term)}>
+            {term}
+            <Icon name="close" size={14} />
+          </Chip>
+        ))}
+        {EXCLUDE_SUGGEST.filter((s) => !titleExcludes.includes(s)).map((s) => (
+          <Chip key={`sug-${s}`} onClick={() => addExclude(s)}>
+            +{s}
+          </Chip>
+        ))}
+        <Input
+          className="exclude-input"
+          placeholder="排除词 ↵（已保存）"
+          aria-label="自定义排除词（持久保存）"
+          value={excludeDraft}
+          onChange={(e) => setExcludeDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              addExclude(excludeDraft)
+            }
+          }}
+        />
       </div>
 
       {merchants === 0 ? (
@@ -457,7 +816,10 @@ export function SearchPage(): React.JSX.Element {
         </div>
       ) : emptyReason === 'NO_MATCH' ? (
         <div className="panel">
-          <Empty title="没有匹配结果">换个关键词，或按推荐同步可能有货的店。</Empty>
+          <Empty title="没有匹配结果">
+            换个关键词，或按推荐同步可能有货的店。结果默认隐藏 ≤{SEARCH_DEFAULTS.hidePriceAtOrBelow}{' '}
+            与 ≥{SEARCH_DEFAULTS.hidePriceAtOrAbove} 的价。
+          </Empty>
           {candidates ? (
             <div style={{ padding: '0 24px 28px' }}>
               <CandidatesCta candidates={candidates} busy={busy} onSync={syncCandidates} />
@@ -472,7 +834,7 @@ export function SearchPage(): React.JSX.Element {
               {merchantName && !(facets.merchant ?? []).some((m) => m.value === merchantName) ? (
                 <Chip on onClick={() => setMerchantName(undefined)}>
                   {merchantName}
-                  <Icon name="close" size={12} />
+                  <Icon name="close" size={14} />
                 </Chip>
               ) : null}
               {(facets.merchant ?? []).slice(0, 8).map((m) => (
@@ -498,11 +860,43 @@ export function SearchPage(): React.JSX.Element {
                 <table className="table">
                   <thead>
                     <tr>
-                      <th>商品</th>
-                      <th className="num">价格</th>
-                      <th>店铺</th>
-                      <th className="num">库存</th>
-                      <th>更新</th>
+                      <SortTh
+                        label="商品"
+                        col="title"
+                        sort={sort}
+                        sortDir={sortDir}
+                        onSort={setSortKey}
+                      />
+                      <SortTh
+                        label="价格"
+                        col="price"
+                        sort={sort}
+                        sortDir={sortDir}
+                        onSort={setSortKey}
+                        className="num"
+                      />
+                      <SortTh
+                        label="店铺"
+                        col="merchant"
+                        sort={sort}
+                        sortDir={sortDir}
+                        onSort={setSortKey}
+                      />
+                      <SortTh
+                        label="库存"
+                        col="stock"
+                        sort={sort}
+                        sortDir={sortDir}
+                        onSort={setSortKey}
+                        className="num"
+                      />
+                      <SortTh
+                        label="更新"
+                        col="fetchedAt"
+                        sort={sort}
+                        sortDir={sortDir}
+                        onSort={setSortKey}
+                      />
                       <th></th>
                     </tr>
                   </thead>
@@ -546,7 +940,13 @@ export function SearchPage(): React.JSX.Element {
                             >
                               {timeAgo(hit.fetchedAt)}
                             </span>
-                            {stale && (hit.shopToken || hit.ldxpToken) && hit.platformId ? (
+                            {stale &&
+                            resolveShopRef({
+                              platformId: hit.platformId,
+                              shopToken: hit.shopToken,
+                              ldxpToken: hit.ldxpToken,
+                              strictPlatform: true
+                            }) ? (
                               <div>
                                 <button
                                   className="linkish"
@@ -564,6 +964,8 @@ export function SearchPage(): React.JSX.Element {
                           <td>
                             <div className="row-actions">
                               <Button
+                                variant="primary"
+                                size="s"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   void openHit(hit)
@@ -575,7 +977,7 @@ export function SearchPage(): React.JSX.Element {
                                 className="linkish"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  void compare(hit)
+                                  compare(hit)
                                 }}
                               >
                                 比价
@@ -589,6 +991,31 @@ export function SearchPage(): React.JSX.Element {
                               >
                                 收藏
                               </button>
+                              <button
+                                className="linkish"
+                                title="屏蔽该商品"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  void blockProduct(hit)
+                                }}
+                              >
+                                屏蔽
+                              </button>
+                              {hit.merchantId ? (
+                                <button
+                                  className="linkish"
+                                  title="屏蔽该商家全部商品"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    void blockMerchant(hit)
+                                  }}
+                                >
+                                  屏蔽店
+                                </button>
+                              ) : null}
+                              {hit.sourceUrl ? (
+                                <CopyLinkButton url={hit.sourceUrl} stopPropagation />
+                              ) : null}
                             </div>
                           </td>
                         </tr>
@@ -614,68 +1041,7 @@ export function SearchPage(): React.JSX.Element {
         </>
       )}
 
-      {compareRows ? (
-        <>
-          <button className="scrim" aria-label="关闭比价" onClick={closeCompare} />
-          <aside className="drawer" role="dialog" aria-label="比价">
-            <div className="drawer-head">
-              <strong title={compareTitle}>比价：{compareTitle}</strong>
-              <IconButton label="关闭" onClick={closeCompare}>
-                <Icon name="close" />
-              </IconButton>
-            </div>
-            {compareNotice ? <div className="drawer-note">{compareNotice}</div> : null}
-            <div className="drawer-body">
-              {!compareRows.length ? (
-                <Empty title="没有足够相似的标题可对比">试试更短的关键词搜索。</Empty>
-              ) : (
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>商品</th>
-                      <th>店铺</th>
-                      <th className="num">价格</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {compareRows.map((r) => {
-                      const lowest = compareMin != null && r.price != null && r.price === compareMin
-                      return (
-                        <tr key={r.id}>
-                          <td>
-                            <div className="ellipsis" style={{ maxWidth: 150 }} title={r.title}>
-                              {r.title}
-                            </div>
-                          </td>
-                          <td>
-                            <div className="ellipsis" style={{ maxWidth: 100 }}>
-                              {r.merchantName ?? '—'}
-                            </div>
-                          </td>
-                          <td className="num">
-                            <Price price={r.price} currency={r.currency} lowest={lowest} />
-                            {lowest ? (
-                              <div>
-                                <LowFlag />
-                              </div>
-                            ) : null}
-                          </td>
-                          <td>
-                            <IconButton label="打开源站" onClick={() => void openHit(r)}>
-                              <Icon name="external" size={14} />
-                            </IconButton>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </aside>
-        </>
-      ) : null}
+      <CompareDrawer title={compareTitle} onClose={closeCompare} onOpenHit={openHit} />
     </div>
   )
 }

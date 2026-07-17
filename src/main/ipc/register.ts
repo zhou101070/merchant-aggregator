@@ -2,7 +2,8 @@ import { app, ipcMain, shell } from 'electron'
 import { AppError } from '@shared/types/errors'
 import { DB_SCHEMA_VERSION } from '@shared/constants'
 import { IPC_CHANNELS } from '@shared/types/ipc'
-import type { FavoriteTargetType } from '@shared/types/favorites'
+import type { BlockTargetType } from '@shared/types/blocklist'
+import type { FavoriteTargetType, FavoriteUpdateRequest } from '@shared/types/favorites'
 import type { MerchantListQuery } from '@shared/types/merchant'
 import type { CompareRequest, ShopProductListQuery } from '@shared/types/product'
 import type { SearchQuery } from '@shared/types/search'
@@ -59,7 +60,6 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   )
 
   ipcMain.handle(IPC_CHANNELS.searchQuery, async (_e, req: SearchQuery) => ctx.search.query(req))
-  ipcMain.handle(IPC_CHANNELS.searchMeta, async () => ctx.search.meta())
 
   ipcMain.handle(IPC_CHANNELS.syncStart, async (_e, req: SyncStartRequest) => {
     try {
@@ -87,8 +87,18 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC_CHANNELS.favoritesList, async () => ctx.repos.favorites.list())
   ipcMain.handle(
     IPC_CHANNELS.favoritesAdd,
-    async (_e, req: { targetType: FavoriteTargetType; targetId: string; note?: string }) =>
-      ctx.repos.favorites.add(req)
+    async (
+      _e,
+      req: {
+        targetType: FavoriteTargetType
+        targetId: string
+        note?: string
+        targetPrice?: number | null
+      }
+    ) => ctx.repos.favorites.add(req)
+  )
+  ipcMain.handle(IPC_CHANNELS.favoritesUpdate, async (_e, req: FavoriteUpdateRequest) =>
+    ctx.repos.favorites.update(req)
   )
   ipcMain.handle(
     IPC_CHANNELS.favoritesRemove,
@@ -104,6 +114,21 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     async (_e, req: { targetType: string; targetId: string; titleSnapshot?: string }) =>
       ctx.repos.recent.touch(req)
   )
+
+  ipcMain.handle(IPC_CHANNELS.blocklistList, async () => ctx.repos.blocklist.list())
+  ipcMain.handle(
+    IPC_CHANNELS.blocklistAdd,
+    async (
+      _e,
+      req: { targetType: BlockTargetType; targetId: string; titleSnapshot?: string | null }
+    ) => ctx.repos.blocklist.add(req)
+  )
+  ipcMain.handle(
+    IPC_CHANNELS.blocklistRemove,
+    async (_e, req: { targetType: BlockTargetType; targetId: string }) =>
+      ctx.repos.blocklist.remove(req)
+  )
+  ipcMain.handle(IPC_CHANNELS.blocklistClear, async () => ctx.repos.blocklist.clear())
 
   ipcMain.handle(IPC_CHANNELS.settingsGet, async () => ctx.repos.settings.get())
   ipcMain.handle(IPC_CHANNELS.settingsSet, async (_e, partial: Partial<AppSettings>) =>

@@ -30,6 +30,3 @@ export function isShopApiChallengeResponse(status: number, text: string): boolea
     trimmed
   )
 }
-
-/** @deprecated use isShopApiChallengeResponse */
-export const isLdxpChallengeResponse = isShopApiChallengeResponse

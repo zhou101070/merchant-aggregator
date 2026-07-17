@@ -4,6 +4,7 @@ import type { ButtonHTMLAttributes, InputHTMLAttributes, PropsWithChildren, Reac
 
 export function Button({
   variant = 'default',
+  size = 'default',
   loading,
   className,
   children,
@@ -11,9 +12,15 @@ export function Button({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'default' | 'primary' | 'ghost' | 'danger'
+  size?: 'default' | 's'
   loading?: boolean
 }): React.JSX.Element {
-  const cls = ['btn', variant !== 'default' ? `btn-${variant}` : '', className ?? '']
+  const cls = [
+    'btn',
+    variant !== 'default' ? `btn-${variant}` : '',
+    size === 's' ? 'btn-s' : '',
+    className ?? ''
+  ]
     .filter(Boolean)
     .join(' ')
   return (
@@ -42,11 +49,6 @@ export function IconButton({
 export function Input(props: InputHTMLAttributes<HTMLInputElement>): React.JSX.Element {
   const { className, ...rest } = props
   return <input {...rest} className={`input ${className ?? ''}`} />
-}
-
-export function Checkbox(props: InputHTMLAttributes<HTMLInputElement>): React.JSX.Element {
-  const { className, ...rest } = props
-  return <input type="checkbox" {...rest} className={`checkbox ${className ?? ''}`} />
 }
 
 export function Switch({
@@ -118,7 +120,8 @@ export function Segmented<T extends string>({
   options,
   label
 }: {
-  value: T
+  /** null = none selected (e.g. column sort outside toolbar options) */
+  value: T | null
   onChange: (v: T) => void
   options: { value: T; label: string }[]
   label?: string

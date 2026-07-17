@@ -4,12 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { openDatabase, closeDatabase } from '../../../db/connection'
 import { MerchantsRepo } from '../../../db/repositories/merchants-repo'
-import {
-  normalizeMerchant,
-  deriveLdxpToken,
-  deriveShopRef,
-  hasMerchantExternalLink
-} from '../normalize'
+import { normalizeMerchant, deriveShopRef, hasMerchantExternalLink } from '../normalize'
 import { priceaiMerchantsPageSchema } from '../zod'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -22,22 +17,20 @@ describe('priceai merchants normalize', () => {
     expect(parsed.degraded).toBe(false)
   })
 
-  it('derives ldxp token from shop url', () => {
+  it('derives ldxp shop ref from shop url', () => {
     expect(
-      deriveLdxpToken({
+      deriveShopRef({
         host: 'pay.ldxp.cn',
         shopUrl: 'https://pay.ldxp.cn/shop/PAXOVOVJ'
       })
-    ).toBe('PAXOVOVJ')
+    ).toMatchObject({
+      shop_platform: 'ldxp',
+      shop_token: 'PAXOVOVJ',
+      ldxp_token: 'PAXOVOVJ'
+    })
   })
 
   it('does not write catfk token into ldxp_token (wrong-platform bugfix)', () => {
-    expect(
-      deriveLdxpToken({
-        host: 'catfk.com',
-        shopUrl: 'https://catfk.com/shop/hththt'
-      })
-    ).toBeNull()
     const ref = deriveShopRef({
       host: 'catfk.com',
       shopUrl: 'https://catfk.com/shop/hththt'

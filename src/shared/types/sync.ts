@@ -103,9 +103,22 @@ const JOB_ALIAS: Record<string, SyncJobType> = {
   bootstrap: 'bootstrap'
 }
 
-/** Normalize aliases → canonical before DB insert / lane assignment. */
-export function normalizeJobType(jobType: SyncJobType | string): SyncJobType {
-  return (JOB_ALIAS[jobType] ?? jobType) as SyncJobType
+/** Canonical job types after alias normalization (no legacy keys). */
+export const CANONICAL_JOB_TYPES = [
+  'merchants',
+  'bootstrap',
+  'shop_one',
+  'shop_selected',
+  'shop_all'
+] as const satisfies readonly SyncJobType[]
+
+/**
+ * Normalize aliases → canonical before DB insert / lane assignment.
+ * Returns null for unknown types so callers can reject before side effects.
+ */
+export function normalizeJobType(jobType: SyncJobType | string): SyncJobType | null {
+  const n = JOB_ALIAS[jobType]
+  return n ?? null
 }
 
 export function isShopJob(jobType: SyncJobType | string): boolean {

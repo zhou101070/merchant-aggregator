@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SHOP_PROFILES } from '../platforms/shop-profiles'
-import {
-  parseLdxpItemKey,
-  parseLdxpShopToken,
-  parseShopItemKey,
-  parseShopUrl
-} from '../lib/url-parse'
+import { parseShopItemKey, parseShopUrl } from '../lib/url-parse'
 
 describe('parseShopUrl', () => {
   it('parses catfk shop URL', () => {
@@ -46,27 +41,20 @@ describe('parseShopUrl', () => {
     expect(catfk?.enabled).toBe(true)
     expect(parseShopUrl('https://www.catfk.com/shop/hththt')?.platformId).toBe('catfk')
   })
-})
 
-describe('parseLdxpShopToken (compat + bugfix)', () => {
-  it('extracts token from ldxp URL', () => {
-    expect(parseLdxpShopToken('https://pay.ldxp.cn/shop/EXZMM8SQ')).toBe('EXZMM8SQ')
+  it('does NOT mis-attribute catfk as ldxp', () => {
+    expect(parseShopUrl('https://catfk.com/shop/hththt')?.platformId).toBe('catfk')
+    expect(parseShopUrl('https://catfk.com/shop/hththt')?.platformId).not.toBe('ldxp')
   })
 
-  it('accepts bare token for legacy callers', () => {
-    expect(parseLdxpShopToken('EXZMM8SQ')).toBe('EXZMM8SQ')
+  it('rejects non-http(s) schemes even with matching host', () => {
+    expect(parseShopUrl('javascript://pay.ldxp.cn/shop/ABC123')).toBeNull()
+    expect(parseShopUrl('file://pay.ldxp.cn/shop/ABC123')).toBeNull()
+    expect(parseShopUrl('data://pay.ldxp.cn/shop/ABC123')).toBeNull()
   })
 
-  it('does NOT treat catfk shop URL as ldxp token (wrong-platform bugfix)', () => {
-    expect(parseLdxpShopToken('https://catfk.com/shop/hththt')).toBeNull()
-  })
-
-  it('rejects unknown host /shop/ paths', () => {
-    expect(parseLdxpShopToken('https://evil.example/shop/ABC12345')).toBeNull()
-  })
-
-  it('rejects path-only /shop/ without host', () => {
-    expect(parseLdxpShopToken('/shop/EXZMM8SQ')).toBeNull()
+  it('rejects embedded credentials', () => {
+    expect(parseShopUrl('https://user:pass@pay.ldxp.cn/shop/ABC123')).toBeNull()
   })
 })
 
@@ -76,7 +64,21 @@ describe('parseShopItemKey', () => {
     expect(r).toMatchObject({ platformId: 'catfk', goodsKey: 'GOODSKEY1' })
   })
 
-  it('parseLdxpItemKey ignores non-ldxp hosts', () => {
-    expect(parseLdxpItemKey('https://catfk.com/item/GOODSKEY1')).toBeNull()
+  it('parses ldxp item URL', () => {
+    const r = parseShopItemKey('https://pay.ldxp.cn/item/Xy9Z')
+    expect(r).toMatchObject({ platformId: 'ldxp', goodsKey: 'Xy9Z' })
+  })
+
+  it('rejects unknown host item URL', () => {
+    expect(parseShopItemKey('https://evil.example/item/GOODSKEY1')).toBeNull()
+  })
+
+  it('rejects non-url', () => {
+    expect(parseShopItemKey('not-a-url')).toBeNull()
+  })
+
+  it('rejects non-http(s) item URLs', () => {
+    expect(parseShopItemKey('javascript://pay.ldxp.cn/item/Xy9Z')).toBeNull()
+    expect(parseShopItemKey('file://catfk.com/item/GOODSKEY1')).toBeNull()
   })
 })

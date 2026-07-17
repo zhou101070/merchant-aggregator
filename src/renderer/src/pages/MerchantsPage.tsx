@@ -21,6 +21,7 @@ import { useSyncStatus } from '../hooks/useSync'
 import { SHOP_PLATFORM_OTHER, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { shopAllSpec } from '../lib/confirm-sync'
 import { openExternalSafe } from '../lib/open-external'
+import { resolveShopRef } from '../lib/shop-ref'
 import { formatSyncProgress } from '../lib/sync-labels'
 import { timeAgo } from '../lib/format-time'
 
@@ -67,8 +68,8 @@ export function MerchantsPage(): React.JSX.Element {
     status,
     progress,
     startMerchants,
-    startLdxpSelected,
-    startLdxpAll,
+    startShopSelected,
+    startShopAll,
     start,
     cancelRunning,
     busy,
@@ -198,7 +199,7 @@ export function MerchantsPage(): React.JSX.Element {
   async function syncAll(): Promise<void> {
     const n = status?.counts.scrapableMerchants ?? status?.counts.ldxpMerchants ?? ldxpRows.length
     if (!(await confirm(shopAllSpec(n)))) return
-    void startLdxpAll()
+    void startShopAll()
     toast('已开始同步全部可刮店铺')
   }
 
@@ -206,6 +207,12 @@ export function MerchantsPage(): React.JSX.Element {
     void window.api.favorites
       .add({ targetType: 'merchant', targetId: m.id })
       .then(() => toast(`已收藏商家：${m.name}`, 'ok'))
+  }
+
+  function blockMerchant(m: Merchant): void {
+    void window.api.blocklist
+      .add({ targetType: 'merchant', targetId: m.id, titleSnapshot: m.name })
+      .then(() => toast(`已屏蔽商家：${m.name}（搜索不再显示）`, 'ok'))
   }
 
   return (
@@ -233,7 +240,7 @@ export function MerchantsPage(): React.JSX.Element {
               <Button
                 disabled={!checkedLdxp.length}
                 onClick={() => {
-                  void startLdxpSelected(checkedLdxp)
+                  void startShopSelected(checkedLdxp)
                   toast(`已开始同步所选 ${checkedLdxp.length} 家店`)
                 }}
               >
@@ -454,11 +461,14 @@ export function MerchantsPage(): React.JSX.Element {
                   同步：{healthLabel(selected.healthStatus)}
                 </StatusDot>
                 {selected.upstreamHealth ? <Badge>上游：{selected.upstreamHealth}</Badge> : null}
-                {selected.shopToken || selected.ldxpToken ? (
-                  <span className="mono faint">
-                    {selected.shopPlatform || 'ldxp'}:{selected.shopToken || selected.ldxpToken}
-                  </span>
-                ) : null}
+                {(() => {
+                  const ref = resolveShopRef(selected)
+                  return ref ? (
+                    <span className="mono faint">
+                      {ref.platformId}:{ref.token}
+                    </span>
+                  ) : null
+                })()}
               </div>
 
               {selected.healthMessage ? (
@@ -488,10 +498,12 @@ export function MerchantsPage(): React.JSX.Element {
                   <Button
                     disabled={busy}
                     onClick={() => {
+                      const ref = resolveShopRef(selected)
+                      if (!ref) return
                       void start('shop_one', {
                         merchantId: selected.id,
-                        platformId: selected.shopPlatform || 'ldxp',
-                        token: selected.shopToken || selected.ldxpToken || undefined
+                        platformId: ref.platformId,
+                        token: ref.token
                       })
                       toast(`已开始同步：${selected.name}`)
                     }}
@@ -503,6 +515,13 @@ export function MerchantsPage(): React.JSX.Element {
                 <Button onClick={() => favoriteMerchant(selected)}>
                   <Icon name="bookmark" size={14} />
                   收藏
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => blockMerchant(selected)}
+                  title="屏蔽后搜索与比价不再显示该店商品"
+                >
+                  屏蔽
                 </Button>
               </div>
               {!scrapable(selected) ? (

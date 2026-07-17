@@ -1,7 +1,8 @@
-import type { Favorite, FavoriteTargetType, RecentView } from './favorites'
+import type { BlockedTarget, BlockTargetType } from './blocklist'
+import type { Favorite, FavoriteTargetType, FavoriteUpdateRequest, RecentView } from './favorites'
 import type { Merchant, MerchantCandidates, MerchantListQuery } from './merchant'
 import type { CompareRequest, CompareResult, ShopProduct, ShopProductListQuery } from './product'
-import type { SearchMeta, SearchQuery, SearchResult } from './search'
+import type { SearchQuery, SearchResult } from './search'
 import type { AppSettings } from './settings'
 import type {
   SyncJobListQuery,
@@ -18,7 +19,6 @@ export const IPC_CHANNELS = {
   shopProductsList: 'shopProducts:list',
   productsCompare: 'products:compare',
   searchQuery: 'search:query',
-  searchMeta: 'search:meta',
   syncStart: 'sync:start',
   syncCancel: 'sync:cancel',
   syncStatus: 'sync:status',
@@ -28,9 +28,14 @@ export const IPC_CHANNELS = {
   syncListJobs: 'sync:listJobs',
   favoritesList: 'favorites:list',
   favoritesAdd: 'favorites:add',
+  favoritesUpdate: 'favorites:update',
   favoritesRemove: 'favorites:remove',
   recentList: 'recent:list',
   recentTouch: 'recent:touch',
+  blocklistList: 'blocklist:list',
+  blocklistAdd: 'blocklist:add',
+  blocklistRemove: 'blocklist:remove',
+  blocklistClear: 'blocklist:clear',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   shellOpenExternal: 'shell:openExternal',
@@ -54,7 +59,6 @@ export interface RendererApi {
   }
   search: {
     query: (req: SearchQuery) => Promise<SearchResult>
-    meta: () => Promise<SearchMeta>
   }
   sync: {
     start: (req: SyncStartRequest) => Promise<{ jobId: string }>
@@ -71,7 +75,9 @@ export interface RendererApi {
       targetType: FavoriteTargetType
       targetId: string
       note?: string
+      targetPrice?: number | null
     }) => Promise<Favorite>
+    update: (req: FavoriteUpdateRequest) => Promise<Favorite | null>
     remove: (req: { targetType: FavoriteTargetType; targetId: string }) => Promise<{ ok: boolean }>
   }
   recent: {
@@ -81,6 +87,16 @@ export interface RendererApi {
       targetId: string
       titleSnapshot?: string
     }) => Promise<{ ok: boolean }>
+  }
+  blocklist: {
+    list: () => Promise<BlockedTarget[]>
+    add: (req: {
+      targetType: BlockTargetType
+      targetId: string
+      titleSnapshot?: string | null
+    }) => Promise<BlockedTarget>
+    remove: (req: { targetType: BlockTargetType; targetId: string }) => Promise<{ ok: boolean }>
+    clear: () => Promise<{ deleted: number }>
   }
   settings: {
     get: () => Promise<AppSettings>

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, Notification } from 'electron'
 import { AppError, type AppErrorCode } from '@shared/types/errors'
 import {
   isShopJob,
@@ -11,7 +11,7 @@ import {
   type SyncStatus
 } from '@shared/types/sync'
 import { IPC_CHANNELS } from '@shared/types/ipc'
-import { BOOTSTRAP_TOP_N } from '@shared/constants'
+import { APP_NAME, BOOTSTRAP_TOP_N } from '@shared/constants'
 import { parseShopUrl } from '@shared/lib/url-parse'
 import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { findProfileById } from '@shared/platforms/shop-types'
@@ -75,6 +75,11 @@ export class SyncOrchestrator {
 
     const requestedJobType = req.jobType
     const jobType = normalizeJobType(req.jobType)
+    if (!jobType) {
+      throw new AppError('INTERNAL', `unknown job type ${String(req.jobType)}`, {
+        jobType: req.jobType
+      })
+    }
 
     const lanes = lanesFor(jobType)
     for (const lane of lanes) {
@@ -696,6 +701,35 @@ export class SyncOrchestrator {
     }
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IPC_CHANNELS.syncProgress, payload)
+    }
+    this.maybeNotifyFinished(payload)
+  }
+
+  private maybeNotifyFinished(event: SyncProgressEvent): void {
+    if (!['succeeded', 'failed', 'partial', 'cancelled'].includes(event.status)) return
+    const settings = this.repos.settings.get()
+    if (!settings.notifyOnJobFinished) return
+    if (!Notification.isSupported()) return
+    const statusLabel =
+      event.status === 'succeeded'
+        ? '完成'
+        : event.status === 'partial'
+          ? '部分完成'
+          : event.status === 'cancelled'
+            ? '已取消'
+            : '失败'
+    const body = [event.message, event.errorCode ? `错误: ${event.errorCode}` : '']
+      .filter(Boolean)
+      .join(' · ')
+    try {
+      new Notification({
+        title: `${APP_NAME} · 同步${statusLabel}`,
+        body: body || event.jobType
+      }).show()
+    } catch (err) {
+      log.warn('desktop notification failed', {
+        err: err instanceof Error ? err.message : String(err)
+      })
     }
   }
 }

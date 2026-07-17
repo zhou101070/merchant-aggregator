@@ -101,15 +101,6 @@ export function deriveShopRef(input: {
   return null
 }
 
-/** @deprecated use deriveShopRef; only returns token for ldxp */
-export function deriveLdxpToken(input: {
-  host?: string | null
-  shopUrl?: string | null
-  entryUrl?: string | null
-}): string | null {
-  return deriveShopRef(input)?.ldxp_token ?? null
-}
-
 export function normalizeMerchant(
   raw: PriceaiMerchantRawParsed,
   opts: { fetchedAt: string; generatedAt?: string | null }

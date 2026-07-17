@@ -618,7 +618,7 @@ export function SyncCenterPage(): React.JSX.Element {
                             className="row-actions"
                             onClick={() => void deleteJob(j.id)}
                           >
-                            <Icon name="close" size={13} />
+                            <Icon name="close" size={14} />
                           </IconButton>
                         ) : null}
                       </td>

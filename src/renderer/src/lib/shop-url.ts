@@ -2,23 +2,13 @@
  * Build shop/item URLs via shared profile registry — no host hardcodes in UI.
  */
 import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
-import { findProfileById, itemPageUrl, shopRootUrl } from '@shared/platforms/shop-types'
+import { findProfileById, itemPageUrl } from '@shared/platforms/shop-types'
 
-export function itemUrlForSource(
-  source: string | null | undefined,
-  goodsKey: string
-): string | null {
+function itemUrlForSource(source: string | null | undefined, goodsKey: string): string | null {
   if (!source || !goodsKey) return null
   const profile = findProfileById(source, SHOP_PROFILES)
   if (!profile) return null
   return itemPageUrl(profile, goodsKey)
-}
-
-export function shopUrlForRef(platformId: string | null | undefined, token: string): string | null {
-  if (!platformId || !token) return null
-  const profile = findProfileById(platformId, SHOP_PROFILES)
-  if (!profile) return null
-  return shopRootUrl(profile, token)
 }
 
 /** Parse product id `source:token:goodsKey` or `shop:source:token:goodsKey` → item URL */

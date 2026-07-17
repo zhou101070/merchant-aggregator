@@ -22,32 +22,41 @@ function SyncWidget(): React.JSX.Element {
     .sort()
     .pop()
 
+  // Outer is a div (not button) so cancel IconButton is not nested interactive.
   return (
-    <button
-      type="button"
-      className="sync-widget"
-      onClick={() => navigate('/sync')}
-      title="打开同步中心"
-    >
+    <div className="sync-widget">
       {busy && job ? (
         <>
           <span className="sync-title">
-            <span>{jobTypeLabel(job.jobType)}</span>
-            <IconButton
-              label="取消同步"
-              onClick={(e) => {
-                e.stopPropagation()
-                void cancelRunning()
-              }}
+            <button
+              type="button"
+              className="sync-widget-hit"
+              onClick={() => navigate('/sync')}
+              title="打开同步中心"
             >
-              <Icon name="close" size={13} />
+              {jobTypeLabel(job.jobType)}
+            </button>
+            <IconButton label="取消同步" onClick={() => void cancelRunning()}>
+              <Icon name="close" size={14} />
             </IconButton>
           </span>
-          <Progress current={job.current ?? 0} total={job.total ?? 0} indeterminate={!job.total} />
-          <span className="sync-line">{formatSyncProgress(job)}</span>
+          <button
+            type="button"
+            className="sync-widget-hit"
+            onClick={() => navigate('/sync')}
+            title="打开同步中心"
+          >
+            <Progress current={job.current ?? 0} total={job.total ?? 0} indeterminate={!job.total} />
+            <span className="sync-line">{formatSyncProgress(job)}</span>
+          </button>
         </>
       ) : (
-        <>
+        <button
+          type="button"
+          className="sync-widget-hit"
+          onClick={() => navigate('/sync')}
+          title="打开同步中心"
+        >
           <span className="sync-counts">
             <span>商家</span>
             <span className="num">{status?.counts.merchants ?? 0}</span>
@@ -59,9 +68,9 @@ function SyncWidget(): React.JSX.Element {
           <span className="sync-line">
             {lastSync ? `上次同步 ${timeAgo(lastSync)}` : '尚未同步'}
           </span>
-        </>
+        </button>
       )}
-    </button>
+    </div>
   )
 }
 

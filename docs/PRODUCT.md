@@ -30,4 +30,3 @@
 
 - 视觉与交互规范：[DESIGN.md](DESIGN.md)
 - 开发入口与命令：[README.md](../README.md)
-- 早期全量设计稿（部分过时）：[product-design.md](product-design.md)

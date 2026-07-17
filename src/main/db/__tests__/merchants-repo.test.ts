@@ -45,7 +45,7 @@ function hoursAgo(h: number): string {
 }
 
 describe('MerchantsRepo incremental sync helpers', () => {
-  it('listLdxpNeedingSync skips fresh-healthy shops, keeps stale/failed/never', () => {
+  it('listScrapableNeedingSync skips fresh-healthy shops, keeps stale/failed/never', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {
       const repo = new MerchantsRepo(db)
@@ -76,16 +76,15 @@ describe('MerchantsRepo incremental sync helpers', () => {
       })
       insertMerchant(db, { id: 'nonldxp', name: '非ldxp', offerCount: 999 })
 
-      const targets = repo.listLdxpNeedingSync({ freshHours: 24 })
+      const targets = repo.listScrapableNeedingSync({ freshHours: 24 })
       expect(targets.map((t) => t.id)).toEqual(['never', 'stale', 'failed']) // offer_count desc
       expect(targets.map((t) => t.id)).not.toContain('fresh')
       expect(targets.map((t) => t.id)).not.toContain('nonldxp')
 
-      const top1 = repo.listLdxpNeedingSync({ freshHours: 24, limit: 1 })
+      const top1 = repo.listScrapableNeedingSync({ freshHours: 24, limit: 1 })
       expect(top1.map((t) => t.id)).toEqual(['never'])
 
-      // force 全量场景仍走 listLdxpMerchants
-      expect(repo.listLdxpMerchants().length).toBe(4)
+      expect(repo.listScrapableMerchants().length).toBe(4)
     } finally {
       closeDatabase(db)
     }
@@ -126,6 +125,40 @@ describe('MerchantsRepo incremental sync helpers', () => {
       const none = repo.candidatesForQuery('   ', 24)
       expect(none.merchantIds).toEqual([])
       expect(none.totalMatching).toBe(0)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+})
+
+describe('MerchantsRepo list health filters', () => {
+  it('excludes non-scrapable rows from healthy/failing/retrying filters', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      insertMerchant(db, {
+        id: 'scrapable-fail',
+        name: '可刮失败',
+        shopPlatform: 'ldxp',
+        shopToken: 'tok',
+        appHealthStatus: 'failing',
+        appHealthAt: hoursAgo(1)
+      })
+      // Non-scrapable but residual failing status in DB
+      insertMerchant(db, {
+        id: 'orphan-fail',
+        name: '不可刮残留',
+        appHealthStatus: 'failing',
+        appHealthAt: hoursAgo(1)
+      })
+
+      const failing = repo.list({ health: ['failing'], offset: 0, limit: 50 })
+      expect(failing.rows.map((r) => r.id)).toEqual(['scrapable-fail'])
+      expect(failing.rows[0]?.healthStatus).toBe('failing')
+
+      const na = repo.list({ health: ['n/a'], offset: 0, limit: 50 })
+      expect(na.rows.map((r) => r.id)).toEqual(['orphan-fail'])
+      expect(na.rows[0]?.healthStatus).toBe('n/a')
     } finally {
       closeDatabase(db)
     }
@@ -197,10 +230,22 @@ describe('FavoritesRepo enrichment', () => {
       const product = list.find((f) => f.targetType === 'shop_product')!
       expect(product.titleSnapshot).toBe('Claude Pro 月卡')
       expect(product.price).toBe(12.5)
+      expect(product.baselinePrice).toBe(12.5)
       expect(product.stock).toBe(3)
       expect(product.ldxpToken).toBe('tk1')
       expect(product.merchantId).toBe('m1')
       expect(product.sourceUrl).toContain('/item/g1')
+
+      favs.update({
+        targetType: 'shop_product',
+        targetId: 'ldxp:tk1:g1',
+        note: '待买',
+        targetPrice: 10
+      })
+      const updated = favs.list().find((f) => f.targetType === 'shop_product')!
+      expect(updated.note).toBe('待买')
+      expect(updated.targetPrice).toBe(10)
+      expect(updated.baselinePrice).toBe(12.5)
 
       const merchant = list.find((f) => f.targetType === 'merchant')!
       expect(merchant.titleSnapshot).toBe('某店')

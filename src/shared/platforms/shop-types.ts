@@ -46,16 +46,6 @@ export const DEFAULT_SHOPAPI_ENDPOINTS: ShopApiEndpoints = {
   goodsList: '/shopApi/Shop/goodsList'
 }
 
-/** Resolved shop identity from a URL or explicit platform+token. */
-export interface ShopRef {
-  platformId: string
-  token: string
-  baseUrl: string
-  shopUrl: string
-  profile: ShopSiteProfile
-  profileEnabled: boolean
-}
-
 export function shopRootUrl(
   profile: Pick<ShopSiteProfile, 'baseUrl' | 'shopPathTemplate'>,
   token: string

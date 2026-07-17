@@ -16,6 +16,7 @@ import { SyncOrchestrator } from './services/sync-orchestrator'
 import { SearchService } from './services/search-service'
 import { createLogger } from './utils/logger'
 import { ensureSystemProxy } from './utils/main-fetch'
+import { evaluateOpenExternal } from './utils/url-safety'
 
 const log = createLogger('main')
 
@@ -24,9 +25,33 @@ let repos: Repositories | null = null
 let sync: SyncOrchestrator | null = null
 let search: SearchService | null = null
 
-/** 与 tokens.css 中 --bg 对齐,避免启动/主题切换白闪(DESIGN.md §2) */
-function themeBackground(): string {
-  return nativeTheme.shouldUseDarkColors ? '#0f0e0c' : '#f8f7f4'
+/** Windows 标题栏叠层高度;渲染层用 env(titlebar-area-height) 对齐 */
+const TITLEBAR_OVERLAY_HEIGHT = 36
+
+/**
+ * 窗口铬色与 tokens.css 对齐,避免标题栏/内容「两层皮」(DESIGN.md §2 / §8.3)
+ * hex 为 OKLCH 令牌的近似值,仅主进程 BrowserWindow API 使用。
+ */
+function themeChrome(): { background: string; symbol: string } {
+  if (nativeTheme.shouldUseDarkColors) {
+    // --bg / --ink 深色
+    return { background: '#0f0e0c', symbol: '#eae8e3' }
+  }
+  // --bg / --ink 浅色
+  return { background: '#f8f7f4', symbol: '#1d1a14' }
+}
+
+function applyWindowChrome(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  const { background, symbol } = themeChrome()
+  win.setBackgroundColor(background)
+  if (process.platform === 'win32') {
+    win.setTitleBarOverlay({
+      color: background,
+      symbolColor: symbol,
+      height: TITLEBAR_OVERLAY_HEIGHT
+    })
+  }
 }
 
 /**
@@ -98,6 +123,7 @@ function createWindow(): void {
     app.dock?.setIcon(appIcon)
   }
 
+  const chrome = themeChrome()
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -105,10 +131,22 @@ function createWindow(): void {
     minHeight: 620,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: themeBackground(),
+    backgroundColor: chrome.background,
     // Win/Linux 任务栏与窗口图标；macOS 窗口忽略此项，已用 dock.setIcon
     ...(appIcon && process.platform !== 'darwin' ? { icon: appIcon } : {}),
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
+    // mac: 红绿灯嵌内容区; Win: 隐藏系统标题栏 + 主题色 WCO,与内容一体
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' as const }
+      : process.platform === 'win32'
+        ? {
+            titleBarStyle: 'hidden' as const,
+            titleBarOverlay: {
+              color: chrome.background,
+              symbolColor: chrome.symbol,
+              height: TITLEBAR_OVERLAY_HEIGHT
+            }
+          }
+        : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -117,9 +155,7 @@ function createWindow(): void {
     }
   })
 
-  nativeTheme.on('updated', () => {
-    if (!mainWindow.isDestroyed()) mainWindow.setBackgroundColor(themeBackground())
-  })
+  nativeTheme.on('updated', () => applyWindowChrome(mainWindow))
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -128,8 +164,18 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
+    // Always deny popup creation; mirror shell:openExternal policy (no confirm UI here).
+    try {
+      const settings = repos?.settings.get()
+      if (!settings) return { action: 'deny' as const }
+      const decision = evaluateOpenExternal(details.url, settings)
+      if (decision.action === 'allow') {
+        void shell.openExternal(details.url)
+      }
+    } catch {
+      // invalid URL / unsupported protocol — deny
+    }
+    return { action: 'deny' as const }
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {

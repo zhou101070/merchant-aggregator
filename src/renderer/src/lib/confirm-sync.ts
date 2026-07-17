@@ -27,6 +27,3 @@ export function shopAllSpec(count: number, opts?: { force?: boolean }): ConfirmS
     confirmLabel: '开始同步'
   }
 }
-
-/** @deprecated use shopAllSpec */
-export const ldxpAllSpec = shopAllSpec

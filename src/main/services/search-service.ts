@@ -2,6 +2,9 @@
  * SearchService — local SQLite only (K23).
  * Price source: shop_products (发卡网), NOT PriceAI offers.
  * Must NOT import HTTP clients or SyncOrchestrator.
+ *
+ * Ranking: synonym-aware recall + field-weighted text score (IDF / phrase /
+ * order / adjacency) + light business boosts (stock / health / freshness).
  */
 import type Database from 'better-sqlite3'
 import { SEARCH_DEFAULTS } from '@shared/constants'
@@ -14,6 +17,14 @@ import type {
 } from '@shared/types/search'
 import type { CompareRequest, CompareResult } from '@shared/types/product'
 import { nameNorm } from '@shared/lib/name-norm'
+import {
+  compareRelevance,
+  computeIdfFromRows,
+  expandTokenGroups,
+  isInStock,
+  scoreShopRank,
+  type RankContext
+} from '@shared/lib/search-rank'
 import { likeContains, tokenizeQuery } from '@shared/lib/search-query'
 
 interface ShopSearchRow {
@@ -35,62 +46,18 @@ interface ShopSearchRow {
   fetched_at: string | null
 }
 
-function contains(hay: string | null | undefined, needle: string): boolean {
-  if (!hay || !needle) return false
-  return nameNorm(hay).includes(nameNorm(needle))
-}
-
-function isInStock(stock?: number | null): boolean {
-  return typeof stock === 'number' && stock > 0
-}
-
-/**
- * Rank a shop product row.
- * Phrase match still wins; multi-token queries score by title coverage
- * so "Claude 月卡" ranks "Claude Pro 月卡" above loose merchant-name hits.
- */
-function scoreShop(row: ShopSearchRow, q: string, tokens: string[]): number {
-  let score = 0
-  const titleN = nameNorm(row.title)
-  const qn = nameNorm(q)
-
-  if (qn && titleN.includes(qn)) score += 40
-  // Title starts with the phrase → strong intent match
-  if (qn && titleN.startsWith(qn)) score += 10
-
-  if (q && contains(row.shop_name ?? row.merchant_name, q)) score += 15
-  if (q && contains(row.category_name, q)) score += 10
-
-  let titleTokenHits = 0
-  let otherTokenHits = 0
-  for (const t of tokens) {
-    if (!t) continue
-    if (titleN.includes(t)) {
-      titleTokenHits += 1
-    } else if (
-      contains(row.shop_name ?? row.merchant_name, t) ||
-      contains(row.category_name, t) ||
-      contains(row.goods_type, t)
-    ) {
-      otherTokenHits += 1
-    }
+function rowToRank(row: ShopSearchRow): Parameters<typeof scoreShopRank>[0] {
+  return {
+    title: row.title,
+    shopName: row.shop_name,
+    merchantName: row.merchant_name,
+    categoryName: row.category_name,
+    goodsType: row.goods_type,
+    stock: row.stock,
+    merchantHealth: row.merchant_health,
+    fetchedAt: row.fetched_at,
+    price: row.price
   }
-  // Prefer title token hits (design: +10/token cap 30)
-  score += Math.min(30, titleTokenHits * 10)
-  score += Math.min(10, otherTokenHits * 4)
-
-  // Multi-token coverage: all title tokens >> partial
-  if (tokens.length >= 2) {
-    const coverage = titleTokenHits / tokens.length
-    score += Math.round(coverage * 20)
-    if (titleTokenHits === tokens.length) score += 15
-  }
-
-  if (isInStock(row.stock)) score += 15
-  if (row.merchant_health === 'healthy') score += 10
-  if (row.merchant_health === 'failing') score -= 20
-  if (row.merchant_health === 'retrying') score -= 10
-  return score
 }
 
 /** Shared SELECT for shop_products + merchant join. */
@@ -129,19 +96,20 @@ export class SearchService {
 
     const q = (req.q ?? '').trim()
     const tokens = tokenizeQuery(q)
+    const tokenGroups = expandTokenGroups(tokens)
     const limit = Math.max(1, req.limit ?? SEARCH_DEFAULTS.limit)
     const offset = Math.max(0, req.offset ?? SEARCH_DEFAULTS.offset)
     const sort = req.sort ?? 'score'
     const sortDir = req.sortDir ?? (sort === 'price' ? 'asc' : 'desc')
 
-    let { where, params } = this.buildWhere(req, q, tokens)
+    let { where, params } = this.buildWhere(req, q, tokenGroups)
     let whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
 
     // Soft fallback: multi-token AND empty → OR match (recall)
-    if (q && tokens.length >= 2) {
+    if (q && tokenGroups.length >= 2) {
       const andTotal = this.countWhere(whereSql, params)
       if (andTotal === 0) {
-        const or = this.buildTokenOrWhere(tokens)
+        const or = this.buildTokenOrWhere(tokenGroups)
         const orWhere = [...or.where]
         const orParams = { ...or.params }
         this.appendFilters(req, orWhere, orParams)
@@ -159,18 +127,37 @@ export class SearchService {
     // No free-text query: SQL page over full match set (no 3000 cap).
     // With free-text: score in memory over all matches (usually << catalog size).
     if (!q) {
+      const rankCtx: RankContext = {
+        q,
+        tokens,
+        tokenGroups,
+        idf: new Map(),
+        nowMs: Date.now()
+      }
       const orderSql = this.browseOrderSql(sort, sortDir)
       const pageParams = { ...params, limit, offset }
       const rows = this.db
         .prepare(`${SHOP_SELECT} ${whereSql} ${orderSql} LIMIT @limit OFFSET @offset`)
         .all(pageParams) as ShopSearchRow[]
-      const hits = rows.map((row) => this.toHit(row, q, tokens))
+      const hits = rows.map((row) => this.toHit(row, rankCtx))
       const facets = this.buildFacetsSql(whereSql, params)
       return { hits, total, facets }
     }
 
     const rows = this.db.prepare(`${SHOP_SELECT} ${whereSql}`).all(params) as ShopSearchRow[]
-    const hits = rows.map((row) => this.toHit(row, q, tokens))
+    // IDF from candidate set only — no per-token full-table COUNT
+    const rankCtx: RankContext = {
+      q,
+      tokens,
+      tokenGroups,
+      idf: computeIdfFromRows(
+        rows.map((row) => rowToRank(row)),
+        tokens,
+        tokenGroups
+      ),
+      nowMs: Date.now()
+    }
+    const hits = rows.map((row) => this.toHit(row, rankCtx))
     this.sortHits(hits, sort, sortDir)
     const facets = this.buildFacets(hits)
     return { hits: hits.slice(offset, offset + limit), total, facets }
@@ -216,20 +203,20 @@ export class SearchService {
   }
 
   /**
-   * Token AND: every token must appear in title/shop/merchant/category.
-   * Falls back to full-string LIKE when tokenization yields nothing useful.
+   * Token AND: every synonym-group must hit title/shop/merchant/category/type
+   * (OR within a group). Falls back to full-string LIKE when no tokens.
    */
   private buildWhere(
     req: SearchQuery,
     q: string,
-    tokens: string[]
+    tokenGroups: string[][]
   ): { where: string[]; params: Record<string, unknown> } {
     const where: string[] = []
     const params: Record<string, unknown> = {}
 
     if (q) {
-      if (tokens.length > 0) {
-        const { where: tw, params: tp } = this.buildTokenAndWhere(tokens)
+      if (tokenGroups.length > 0) {
+        const { where: tw, params: tp } = this.buildTokenAndWhere(tokenGroups)
         where.push(...tw)
         Object.assign(params, tp)
       } else {
@@ -244,31 +231,40 @@ export class SearchService {
     return { where, params }
   }
 
-  private buildTokenAndWhere(tokens: string[]): {
+  private fieldMatchClause(paramKey: string): string {
+    return `(s.title LIKE @${paramKey} ESCAPE '\\' OR s.shop_name LIKE @${paramKey} ESCAPE '\\' OR m.name LIKE @${paramKey} ESCAPE '\\' OR s.category_name LIKE @${paramKey} ESCAPE '\\' OR s.goods_type LIKE @${paramKey} ESCAPE '\\')`
+  }
+
+  private buildTokenAndWhere(tokenGroups: string[][]): {
     where: string[]
     params: Record<string, unknown>
   } {
     const where: string[] = []
     const params: Record<string, unknown> = {}
-    tokens.forEach((t, i) => {
-      const key = `tok${i}`
-      params[key] = likeContains(t)
-      where.push(
-        `(s.title LIKE @${key} ESCAPE '\\' OR s.shop_name LIKE @${key} ESCAPE '\\' OR m.name LIKE @${key} ESCAPE '\\' OR s.category_name LIKE @${key} ESCAPE '\\' OR s.goods_type LIKE @${key} ESCAPE '\\')`
-      )
+    tokenGroups.forEach((group, i) => {
+      const ors = group.map((v, j) => {
+        const key = `tok${i}_${j}`
+        params[key] = likeContains(v)
+        return this.fieldMatchClause(key)
+      })
+      where.push(`(${ors.join(' OR ')})`)
     })
     return { where, params }
   }
 
-  private buildTokenOrWhere(tokens: string[]): {
+  private buildTokenOrWhere(tokenGroups: string[][]): {
     where: string[]
     params: Record<string, unknown>
   } {
     const params: Record<string, unknown> = {}
-    const clauses = tokens.map((t, i) => {
-      const key = `otok${i}`
-      params[key] = likeContains(t)
-      return `(s.title LIKE @${key} ESCAPE '\\' OR s.shop_name LIKE @${key} ESCAPE '\\' OR m.name LIKE @${key} ESCAPE '\\' OR s.category_name LIKE @${key} ESCAPE '\\' OR s.goods_type LIKE @${key} ESCAPE '\\')`
+    const clauses: string[] = []
+    tokenGroups.forEach((group, i) => {
+      const ors = group.map((v, j) => {
+        const key = `otok${i}_${j}`
+        params[key] = likeContains(v)
+        return this.fieldMatchClause(key)
+      })
+      clauses.push(`(${ors.join(' OR ')})`)
     })
     return {
       where: clauses.length ? [`(${clauses.join(' OR ')})`] : [],
@@ -277,9 +273,20 @@ export class SearchService {
   }
 
   private appendFilters(req: SearchQuery, where: string[], params: Record<string, unknown>): void {
-    // 首页搜索屏蔽 ≤ hidePriceAtOrBelow 的占位/垃圾价(null 保留)
-    where.push(`(s.price IS NULL OR s.price > @hidePriceAtOrBelow)`)
+    // 首页搜索屏蔽 ≤ hidePriceAtOrBelow 的占位/垃圾价、≥ hidePriceAtOrAbove 的异常高价(null 保留)
+    where.push(
+      `(s.price IS NULL OR (s.price > @hidePriceAtOrBelow AND s.price < @hidePriceAtOrAbove))`
+    )
     params.hidePriceAtOrBelow = SEARCH_DEFAULTS.hidePriceAtOrBelow
+    params.hidePriceAtOrAbove = SEARCH_DEFAULTS.hidePriceAtOrAbove
+    // 本机黑名单：商品 id / 商家 id（搜索与比价共用 query 路径）
+    where.push(
+      `NOT EXISTS (
+         SELECT 1 FROM blocked_targets b
+         WHERE (b.target_type = 'shop_product' AND b.target_id = s.id)
+            OR (b.target_type = 'merchant' AND b.target_id = s.merchant_id)
+       )`
+    )
     if (req.inStockOnly) {
       where.push(`(s.stock IS NOT NULL AND s.stock > 0)`)
     }
@@ -314,6 +321,14 @@ export class SearchService {
         })
       })
     }
+    if (req.titleExcludes?.length) {
+      req.titleExcludes.forEach((t, i) => {
+        const term = t.trim()
+        if (!term) return
+        params[`tex${i}`] = likeContains(term)
+        where.push(`s.title NOT LIKE @tex${i} ESCAPE '\\'`)
+      })
+    }
   }
 
   private countWhere(whereSql: string, params: Record<string, unknown>): number {
@@ -334,6 +349,18 @@ export class SearchService {
     if (sort === 'price') {
       return `ORDER BY (s.price IS NULL) ASC, s.price ${dir}, s.id ASC`
     }
+    if (sort === 'stock') {
+      return `ORDER BY (s.stock IS NULL) ASC, s.stock ${dir}, s.id ASC`
+    }
+    if (sort === 'fetchedAt') {
+      return `ORDER BY (s.fetched_at IS NULL) ASC, s.fetched_at ${dir}, s.id ASC`
+    }
+    if (sort === 'merchant') {
+      return `ORDER BY (COALESCE(m.name, s.shop_name) IS NULL) ASC, COALESCE(m.name, s.shop_name) ${dir}, s.id ASC`
+    }
+    if (sort === 'title') {
+      return `ORDER BY s.title ${dir}, s.id ASC`
+    }
     // Default "score" browse: in-stock first, healthy shops, then cheaper
     return `ORDER BY
       (CASE WHEN s.stock IS NOT NULL AND s.stock > 0 THEN 0 ELSE 1 END) ASC,
@@ -348,7 +375,7 @@ export class SearchService {
       s.id ASC`
   }
 
-  private toHit(row: ShopSearchRow, q: string, tokens: string[]): SearchHit {
+  private toHit(row: ShopSearchRow, rankCtx: RankContext): SearchHit {
     return {
       kind: 'shop_product',
       id: `shop:${row.id}`,
@@ -368,30 +395,54 @@ export class SearchService {
       shopGoodsKey: row.source_goods_key,
       ldxpGoodsKey: row.source_goods_key,
       ldxpToken: row.source_shop_token,
-      score: scoreShop(row, q, tokens),
+      score: scoreShopRank(rowToRank(row), rankCtx),
       fetchedAt: row.fetched_at
     }
   }
 
   private sortHits(hits: SearchHit[], sort: string, sortDir: string): void {
+    const mul = sortDir === 'asc' ? 1 : -1
+    const nullsLast = (
+      a: number | string | null | undefined,
+      b: number | string | null | undefined
+    ): number | null => {
+      if (a == null && b == null) return 0
+      if (a == null) return 1
+      if (b == null) return -1
+      return null
+    }
     hits.sort((a, b) => {
       if (sort === 'price') {
-        const ap = a.price
-        const bp = b.price
-        if (ap == null && bp == null) return b.score - a.score
-        if (ap == null) return 1
-        if (bp == null) return -1
-        const cmp = ap - bp
-        return sortDir === 'asc' ? cmp : -cmp
+        const n = nullsLast(a.price, b.price)
+        if (n != null) return n === 0 ? compareRelevance(a, b) : n
+        return mul * ((a.price as number) - (b.price as number)) || compareRelevance(a, b)
       }
-      const cmp = a.score - b.score
-      if (cmp !== 0) return sortDir === 'asc' ? cmp : -cmp
-      const ap = a.price
-      const bp = b.price
-      if (ap == null && bp == null) return 0
-      if (ap == null) return 1
-      if (bp == null) return -1
-      return ap - bp
+      if (sort === 'stock') {
+        const n = nullsLast(a.stockCount, b.stockCount)
+        if (n != null) return n === 0 ? compareRelevance(a, b) : n
+        return mul * ((a.stockCount as number) - (b.stockCount as number)) || compareRelevance(a, b)
+      }
+      if (sort === 'fetchedAt') {
+        const n = nullsLast(a.fetchedAt, b.fetchedAt)
+        if (n != null) return n === 0 ? compareRelevance(a, b) : n
+        return (
+          mul * String(a.fetchedAt).localeCompare(String(b.fetchedAt)) || compareRelevance(a, b)
+        )
+      }
+      if (sort === 'merchant') {
+        const am = a.merchantName ?? ''
+        const bm = b.merchantName ?? ''
+        if (!am && !bm) return compareRelevance(a, b)
+        if (!am) return 1
+        if (!bm) return -1
+        const cmp = am.localeCompare(bm, 'zh-CN')
+        return mul * cmp || compareRelevance(a, b)
+      }
+      if (sort === 'title') {
+        const cmp = a.title.localeCompare(b.title, 'zh-CN')
+        return mul * cmp || compareRelevance(a, b)
+      }
+      return compareRelevance(a, b, sortDir === 'asc' ? 'asc' : 'desc')
     })
   }
 

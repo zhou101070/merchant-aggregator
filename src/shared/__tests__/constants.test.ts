@@ -26,8 +26,8 @@ describe('IPC_CHANNELS', () => {
 })
 
 describe('schema / search defaults', () => {
-  it('schema version is 4', () => {
-    expect(DB_SCHEMA_VERSION).toBe(4)
+  it('schema version is 5', () => {
+    expect(DB_SCHEMA_VERSION).toBe(6)
   })
 
   it('defaults search page size to 50', () => {

@@ -2,10 +2,10 @@ import { randomBytes } from 'node:crypto'
 import { AppError } from '@shared/types/errors'
 import type { ShopSiteProfile } from '@shared/platforms/shop-types'
 import { resolveShopApiEndpoints, shopRootUrl } from '@shared/platforms/shop-types'
-import { LDXP_LIMITS } from '@shared/constants'
+import { SHOP_API_LIMITS } from '@shared/constants'
 import { createLogger } from '../../utils/logger'
 import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
-import { sleep } from '../../services/rate-limiter'
+import { IntervalLimiter } from '../../services/rate-limiter'
 import {
   browserCorsApiHeaders,
   browserDocumentHeaders,
@@ -50,8 +50,7 @@ export class ShopApiClient {
   private readonly visitorId: string
   private readonly cookieJar = new Map<string, string>()
   private readonly ua: string
-  private readonly minIntervalMs: number
-  private lastAt = 0
+  private readonly limiter: IntervalLimiter
 
   constructor(
     profile: ShopSiteProfile,
@@ -60,7 +59,7 @@ export class ShopApiClient {
     this.profile = profile
     this.visitorId = options?.visitorId ?? createVisitorId()
     this.ua = resolveRequestUserAgent(options?.userAgent)
-    this.minIntervalMs = options?.minIntervalMs ?? profile.defaultMinIntervalMs
+    this.limiter = new IntervalLimiter(options?.minIntervalMs ?? profile.defaultMinIntervalMs)
   }
 
   get baseUrl(): string {
@@ -98,15 +97,6 @@ export class ShopApiClient {
     return [...this.cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
   }
 
-  private async throttle(): Promise<void> {
-    const now = Date.now()
-    const elapsed = now - this.lastAt
-    if (this.lastAt > 0 && elapsed < this.minIntervalMs) {
-      await sleep(this.minIntervalMs - elapsed)
-    }
-    this.lastAt = Date.now()
-  }
-
   private assertNotChallenge(status: number, text: string, path: string): void {
     if (isShopApiChallengeResponse(status, text)) {
       throw new AppError('NEED_BROWSER', 'shop challenge / WAF intercepted request', {
@@ -123,7 +113,7 @@ export class ShopApiClient {
     body: Record<string, unknown>,
     token: string
   ): Promise<T> {
-    await this.throttle()
+    await this.limiter.waitTurn()
     const url = `${this.profile.baseUrl}${path}`
     const headers = browserCorsApiHeaders({
       userAgent: this.ua,
@@ -194,7 +184,7 @@ export class ShopApiClient {
   }
 
   async warmup(token: string): Promise<void> {
-    await this.throttle()
+    await this.limiter.waitTurn()
     try {
       const res = await mainFetch(shopRootUrl(this.profile, token), {
         headers: browserDocumentHeaders({
@@ -264,8 +254,8 @@ export class ShopApiClient {
   }): Promise<{ list: ShopApiGoodsItem[]; total?: number }> {
     const endpoints = resolveShopApiEndpoints(this.profile)
     const pageSize = Math.min(
-      params.pageSize ?? LDXP_LIMITS.defaultPageSize,
-      LDXP_LIMITS.maxPageSize
+      params.pageSize ?? SHOP_API_LIMITS.defaultPageSize,
+      SHOP_API_LIMITS.maxPageSize
     )
     const data = await this.postJson<Record<string, unknown> | ShopApiGoodsItem[]>(
       endpoints.goodsList,
@@ -288,7 +278,3 @@ export class ShopApiClient {
     return { list: Array.isArray(list) ? list : [], total }
   }
 }
-
-/** @deprecated thin alias */
-export { ShopApiClient as LdxpClient }
-export type { ShopApiShopInfo as LdxpShopInfo, ShopApiGoodsItem as LdxpGoodsItem }

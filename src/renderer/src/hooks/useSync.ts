@@ -17,10 +17,6 @@ export function useSyncStatus(): {
   startBootstrap: () => Promise<void>
   startShopAll: (force?: boolean) => Promise<void>
   startShopSelected: (merchantIds: string[]) => Promise<void>
-  /** @deprecated alias */
-  startLdxpAll: (force?: boolean) => Promise<void>
-  /** @deprecated alias */
-  startLdxpSelected: (merchantIds: string[]) => Promise<void>
   cancelRunning: () => Promise<void>
   busy: boolean
   error: string | null
@@ -85,8 +81,10 @@ export function useSyncStatus(): {
     await refresh()
   }, [refresh, status])
 
-  const startShopAll = (force?: boolean) => start('shop_all', force ? { force } : undefined)
-  const startShopSelected = (merchantIds: string[]) => start('shop_selected', { merchantIds })
+  const startShopAll = (force?: boolean): Promise<void> =>
+    start('shop_all', force ? { force } : undefined)
+  const startShopSelected = (merchantIds: string[]): Promise<void> =>
+    start('shop_selected', { merchantIds })
 
   return {
     status,
@@ -97,8 +95,6 @@ export function useSyncStatus(): {
     startBootstrap: () => start('bootstrap'),
     startShopAll,
     startShopSelected,
-    startLdxpAll: startShopAll,
-    startLdxpSelected: startShopSelected,
     cancelRunning,
     busy,
     error

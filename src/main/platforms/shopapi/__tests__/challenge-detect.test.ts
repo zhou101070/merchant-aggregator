@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { isLdxpChallengeResponse } from '../client'
-import { isShopApiChallengeResponse } from '../../shopapi/challenge'
+import { isShopApiChallengeResponse } from '../challenge'
 
-describe('isShopApiChallengeResponse / isLdxpChallengeResponse', () => {
+describe('isShopApiChallengeResponse', () => {
   it('does not flag normal shopApi JSON even if body mentions 验证', () => {
     const body = JSON.stringify({
       code: 1,
@@ -12,7 +11,6 @@ describe('isShopApiChallengeResponse / isLdxpChallengeResponse', () => {
       }
     })
     expect(isShopApiChallengeResponse(200, body)).toBe(false)
-    expect(isLdxpChallengeResponse(200, body)).toBe(false)
   })
 
   it('does not flag normal SPA html shell', () => {

@@ -50,12 +50,3 @@ export function knownShopPlatformIds(
 ): string[] {
   return profiles.map((p) => p.id)
 }
-
-/** Hosts that may appear on scrapable shop / item pages (from profiles). */
-export function scrapableShopHosts(profiles: readonly ShopSiteProfile[] = SHOP_PROFILES): string[] {
-  const set = new Set<string>()
-  for (const p of profiles) {
-    for (const h of p.hosts) set.add(h.toLowerCase())
-  }
-  return [...set]
-}

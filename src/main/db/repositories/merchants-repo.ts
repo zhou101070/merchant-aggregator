@@ -247,15 +247,6 @@ export class MerchantsRepo {
       .run(status, new Date().toISOString(), message ?? null, platform, token)
   }
 
-  /** @deprecated use setAppHealthByShopRef */
-  setAppHealthByToken(
-    token: string,
-    status: 'healthy' | 'failing' | 'retrying',
-    message?: string | null
-  ): void {
-    this.setAppHealthByShopRef('ldxp', token, status, message)
-  }
-
   findByShopRef(platform: string, token: string): Merchant | null {
     const row = this.db
       .prepare(
@@ -296,26 +287,12 @@ export class MerchantsRepo {
     }))
   }
 
-  /** @deprecated alias */
-  listLdxpMerchants(): { id: string; name: string; ldxpToken: string }[] {
-    return this.listScrapableMerchants().map((m) => ({
-      id: m.id,
-      name: m.name,
-      ldxpToken: m.shopToken
-    }))
-  }
-
   countScrapable(): number {
     return (
       this.db.prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${SCRAPABLE_SQL}`).get() as {
         c: number
       }
     ).c
-  }
-
-  /** @deprecated alias */
-  countLdxp(): number {
-    return this.countScrapable()
   }
 
   count(): number {
@@ -366,18 +343,6 @@ export class MerchantsRepo {
     ).map((r) => ({
       ...r,
       ldxpToken: r.shopToken
-    }))
-  }
-
-  /** @deprecated alias */
-  listLdxpNeedingSync(opts: {
-    freshHours: number
-    limit?: number
-  }): { id: string; name: string; ldxpToken: string }[] {
-    return this.listScrapableNeedingSync(opts).map((m) => ({
-      id: m.id,
-      name: m.name,
-      ldxpToken: m.shopToken
     }))
   }
 
@@ -477,9 +442,10 @@ export class MerchantsRepo {
             `(${SCRAPABLE_SQL} AND (app_health_status IS NULL OR app_health_status = '' OR app_health_status = 'never'))`
           )
         } else {
+          // healthy / failing / retrying: only scrapable rows (match deriveAppHealthStatus)
           const key = `h${i}`
           params[key] = h
-          parts.push(`app_health_status = @${key}`)
+          parts.push(`(${SCRAPABLE_SQL} AND app_health_status = @${key})`)
         }
       })
       if (parts.length) where.push(`(${parts.join(' OR ')})`)

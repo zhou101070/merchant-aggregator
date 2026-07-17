@@ -38,7 +38,9 @@ export interface SearchQuery {
   /** Exact merchant display name filter (from facets) */
   merchantName?: string
   titleContains?: string[]
-  sort?: 'score' | 'price'
+  /** 标题排除词(AND NOT LIKE) */
+  titleExcludes?: string[]
+  sort?: 'score' | 'price' | 'stock' | 'fetchedAt' | 'merchant' | 'title'
   sortDir?: 'asc' | 'desc'
   limit?: number
   offset?: number

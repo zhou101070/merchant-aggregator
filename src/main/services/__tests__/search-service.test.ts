@@ -35,6 +35,59 @@ function seedProducts(
 }
 
 describe('SearchService local-only shop_products', () => {
+  it('excludes blocked products and merchants', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [
+        { id: 'm1', name: '好店', token: 'TOK1' },
+        { id: 'm2', name: '坏店', token: 'TOK2' }
+      ])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'Claude Pro 月卡',
+          price: 80
+        },
+        {
+          id: 's2',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g2',
+          title: 'Claude Pro 季卡',
+          price: 200
+        },
+        {
+          id: 's3',
+          merchantId: 'm2',
+          token: 'TOK2',
+          key: 'g3',
+          title: 'Claude Pro 年卡',
+          price: 500
+        }
+      ])
+      db.prepare(
+        `INSERT INTO blocked_targets (target_type, target_id, title_snapshot, created_at)
+         VALUES ('shop_product', 's2', '季卡', datetime('now'))`
+      ).run()
+      db.prepare(
+        `INSERT INTO blocked_targets (target_type, target_id, title_snapshot, created_at)
+         VALUES ('merchant', 'm2', '坏店', datetime('now'))`
+      ).run()
+
+      const search = new SearchService(db)
+      const res = search.query({ q: 'Claude', sort: 'price', sortDir: 'asc', limit: 50, offset: 0 })
+      expect(res.hits.map((h) => h.id)).toEqual(['shop:s1'])
+      const cmp = search.compare({ titleNorm: 'Claude Pro 月卡' })
+      expect(cmp.rows.every((r) => r.id === 'shop:s1' || !r.id.includes('s2'))).toBe(true)
+      expect(cmp.rows.some((r) => r.id === 'shop:s2' || r.id === 'shop:s3')).toBe(false)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
   it('returns SHOP_PRODUCTS_NOT_SYNCED when empty', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {
@@ -219,6 +272,72 @@ describe('SearchService local-only shop_products', () => {
       const res = search.query({ q: 'Claude 月卡', sort: 'score' })
       expect(res.hits[0].title).toBe('Claude Pro 月卡')
       expect(res.hits.every((h) => !h.title.includes('无关'))).toBe(true)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('synonym recall: gpt4 matches ChatGPT titles and ranks them', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'ChatGPT Plus 月卡',
+          price: 90
+        },
+        {
+          id: 's2',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g2',
+          title: 'Claude 月卡',
+          price: 80
+        }
+      ])
+      const search = new SearchService(db)
+      const res = search.query({ q: 'gpt4 plus', sort: 'score' })
+      expect(res.total).toBeGreaterThanOrEqual(1)
+      expect(res.hits[0].title).toMatch(/ChatGPT|Plus/i)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('relevance prefers title intent over cheaper shop-name-only hit', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [
+        { id: 'm1', name: '普通店', token: 'TOK1' },
+        { id: 'm2', name: 'Claude 专营店', token: 'TOK2' }
+      ])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'Claude Pro 月卡 质保',
+          price: 100,
+          stock: 3
+        },
+        {
+          id: 's2',
+          merchantId: 'm2',
+          token: 'TOK2',
+          key: 'g2',
+          title: '随机邮箱成品',
+          price: 1,
+          stock: 99
+        }
+      ])
+      const search = new SearchService(db)
+      const res = search.query({ q: 'Claude 月卡', sort: 'score' })
+      expect(res.hits[0].title).toContain('Claude Pro 月卡')
     } finally {
       closeDatabase(db)
     }
@@ -410,6 +529,76 @@ describe('SearchService local-only shop_products', () => {
       expect(titles.some((t) => t.includes('不含plus'))).toBe(false)
       expect(titles.some((t) => t.includes('无 Plus'))).toBe(false)
       expect(res.total).toBe(2)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('titleExcludes drops matching titles', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'Claude Pro 独享',
+          price: 10
+        },
+        {
+          id: 's2',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g2',
+          title: 'Claude Pro 共享车位',
+          price: 5
+        }
+      ])
+      const search = new SearchService(db)
+      const res = search.query({
+        q: 'Claude',
+        titleExcludes: ['共享'],
+        sort: 'price',
+        sortDir: 'asc'
+      })
+      expect(res.hits.map((h) => h.title)).toEqual(['Claude Pro 独享'])
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('priceMin/priceMax filter', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      seedProducts(db, [
+        { id: 's1', merchantId: 'm1', token: 'TOK1', key: 'g1', title: 'A', price: 3 },
+        { id: 's2', merchantId: 'm1', token: 'TOK1', key: 'g2', title: 'B', price: 10 },
+        { id: 's3', merchantId: 'm1', token: 'TOK1', key: 'g3', title: 'C', price: 20 }
+      ])
+      const search = new SearchService(db)
+      const res = search.query({ priceMin: 5, priceMax: 15, sort: 'price', sortDir: 'asc' })
+      expect(res.hits.map((h) => h.price)).toEqual([10])
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('hides prices at or above 5000', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      seedProducts(db, [
+        { id: 's1', merchantId: 'm1', token: 'TOK1', key: 'g1', title: 'A', price: 100 },
+        { id: 's2', merchantId: 'm1', token: 'TOK1', key: 'g2', title: 'B', price: 5000 },
+        { id: 's3', merchantId: 'm1', token: 'TOK1', key: 'g3', title: 'C', price: 9999 }
+      ])
+      const search = new SearchService(db)
+      const res = search.query({ q: '', sort: 'price', sortDir: 'asc' })
+      expect(res.hits.map((h) => h.price)).toEqual([100])
+      expect(res.total).toBe(1)
     } finally {
       closeDatabase(db)
     }

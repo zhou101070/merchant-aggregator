@@ -16,8 +16,7 @@ export function createRendererApi(): RendererApi {
       compare: (req) => ipcRenderer.invoke(IPC_CHANNELS.productsCompare, req)
     },
     search: {
-      query: (req) => ipcRenderer.invoke(IPC_CHANNELS.searchQuery, req),
-      meta: () => ipcRenderer.invoke(IPC_CHANNELS.searchMeta)
+      query: (req) => ipcRenderer.invoke(IPC_CHANNELS.searchQuery, req)
     },
     sync: {
       start: (req) => ipcRenderer.invoke(IPC_CHANNELS.syncStart, req),
@@ -37,11 +36,18 @@ export function createRendererApi(): RendererApi {
     favorites: {
       list: () => ipcRenderer.invoke(IPC_CHANNELS.favoritesList),
       add: (req) => ipcRenderer.invoke(IPC_CHANNELS.favoritesAdd, req),
+      update: (req) => ipcRenderer.invoke(IPC_CHANNELS.favoritesUpdate, req),
       remove: (req) => ipcRenderer.invoke(IPC_CHANNELS.favoritesRemove, req)
     },
     recent: {
       list: (limit) => ipcRenderer.invoke(IPC_CHANNELS.recentList, limit),
       touch: (req) => ipcRenderer.invoke(IPC_CHANNELS.recentTouch, req)
+    },
+    blocklist: {
+      list: () => ipcRenderer.invoke(IPC_CHANNELS.blocklistList),
+      add: (req) => ipcRenderer.invoke(IPC_CHANNELS.blocklistAdd, req),
+      remove: (req) => ipcRenderer.invoke(IPC_CHANNELS.blocklistRemove, req),
+      clear: () => ipcRenderer.invoke(IPC_CHANNELS.blocklistClear)
     },
     settings: {
       get: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGet),

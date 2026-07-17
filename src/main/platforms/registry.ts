@@ -1,29 +1,8 @@
 import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import type { ShopSiteProfile } from '@shared/platforms/shop-types'
-import { findProfileByHost, findProfileById } from '@shared/platforms/shop-types'
+import { findProfileById } from '@shared/platforms/shop-types'
 import { scrapeShopApi } from './shopapi/scraper'
 import type { NormalizedShopProductRow } from '../db/repositories/shop-products-repo'
-
-export { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
-export type { ShopSiteProfile } from '@shared/platforms/shop-types'
-export {
-  findProfileByHost,
-  findProfileById,
-  shopRootUrl,
-  itemPageUrl
-} from '@shared/platforms/shop-types'
-
-export function getProfile(id: string): ShopSiteProfile | null {
-  return findProfileById(id, SHOP_PROFILES)
-}
-
-export function profileByHost(hostname: string): ShopSiteProfile | null {
-  return findProfileByHost(hostname, SHOP_PROFILES)
-}
-
-export function enabledProfiles(): ShopSiteProfile[] {
-  return SHOP_PROFILES.filter((p) => p.enabled)
-}
 
 export interface ShopScrapeTarget {
   platformId: string
@@ -44,6 +23,10 @@ export interface ShopScraper {
     shopName: string | null
     goodsCount: number
   }>
+}
+
+function getProfile(id: string): ShopSiteProfile | null {
+  return findProfileById(id, SHOP_PROFILES)
 }
 
 const shopApiScraper: ShopScraper = {

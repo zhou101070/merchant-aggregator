@@ -1,8 +1,7 @@
 import { AppError } from '@shared/types/errors'
-import { LDXP_LIMITS } from '@shared/constants'
+import { SHOP_API_LIMITS } from '@shared/constants'
 import type { ShopSiteProfile } from '@shared/platforms/shop-types'
-import { findProfileById, itemPageUrl } from '@shared/platforms/shop-types'
-import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
+import { itemPageUrl } from '@shared/platforms/shop-types'
 import { stripHtml } from '../../services/html-text'
 import { createLogger } from '../../utils/logger'
 import type { NormalizedShopProductRow } from '../../db/repositories/shop-products-repo'
@@ -93,7 +92,7 @@ export async function scrapeShopApi(options: {
         token,
         goodsType,
         current: page,
-        pageSize: LDXP_LIMITS.defaultPageSize
+        pageSize: SHOP_API_LIMITS.defaultPageSize
       })
       if (!list.length) {
         emptyStreak += 1
@@ -118,9 +117,22 @@ export async function scrapeShopApi(options: {
         total: totalEstimate,
         phase: `goods:${goodsType}:p${page}`
       })
-      if (list.length < LDXP_LIMITS.defaultPageSize) break
+      if (list.length < SHOP_API_LIMITS.defaultPageSize) break
       page += 1
-      if (page > 200) break
+      if (page > 200) {
+        throw new AppError(
+          'NETWORK',
+          `shop pagination exceeded page 200 for goods type ${goodsType}`,
+          {
+            platformId: options.profile.id,
+            token,
+            goodsType,
+            page,
+            collected: rows.length,
+            goodsCount: info.goods_count
+          }
+        )
+      }
     }
   }
 
@@ -130,17 +142,4 @@ export async function scrapeShopApi(options: {
     count: rows.length
   })
   return { rows, shopName: info.nickname, goodsCount: info.goods_count }
-}
-
-/** Compat: scrape ldxp by token using registry profile. */
-export async function scrapeLdxpShop(options: {
-  token: string
-  merchantId?: string | null
-  minIntervalMs?: number
-  signal?: AbortSignal
-  onProgress?: (p: { current: number; total: number; phase: string }) => void
-}): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
-  const profile = findProfileById('ldxp', SHOP_PROFILES)
-  if (!profile) throw new AppError('INTERNAL', 'ldxp profile missing')
-  return scrapeShopApi({ ...options, profile })
 }

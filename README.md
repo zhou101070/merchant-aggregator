@@ -26,7 +26,7 @@ shopApi Shop/info + goodsList ──►  shop_products（店内商品）
 用户搜索 / 筛选 / 比价          ──►  仅读本地 SQLite
 ```
 
-- 库文件：`userData/merchant-aggregator.db`（schema **v4**：含 `shop_platform` / `shop_token` 等）
+- 库文件：`userData/merchant-aggregator.db`（schema **v5**：含 `shop_platform` / `shop_token`、收藏基线/目标价等）
 - 平台配置单一来源：`src/shared/platforms/shop-profiles.ts`
 
 ## 技术栈
@@ -50,7 +50,7 @@ src/
   preload/        # 暴露 window.api
   renderer/       # 页面与样式
   shared/         # 类型、常量、平台 profile、查询工具
-docs/             # 产品 / 设计 / 调研文档
+docs/             # 产品与视觉规范
 ```
 
 ## 开发
@@ -87,15 +87,10 @@ Windows 上若 `git push` 的 SSH 22 端口超时，可改用 HTTPS remote。
 
 ## 文档索引
 
-| 文档                                                                                   | 内容                                               |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| [docs/PRODUCT.md](docs/PRODUCT.md)                                                     | 产品定位、核心面、语气                             |
-| [docs/DESIGN.md](docs/DESIGN.md)                                                       | UI 视觉与交互规范（实现以代码为准）                |
-| [docs/product-design.md](docs/product-design.md)                                       | 早期产品与技术设计稿（实现前草稿，部分描述已过时） |
-| [docs/priceai-merchant-scrape-plan.md](docs/priceai-merchant-scrape-plan.md)           | PriceAI 商家同步调研                               |
-| [docs/ldxp-merchant-scrape-plan.md](docs/ldxp-merchant-scrape-plan.md)                 | ldxp / shopApi 深刮调研                            |
-| [docs/multi-platform-shop-scrape-design.md](docs/multi-platform-shop-scrape-design.md) | 多平台 shop 扩展设计                               |
-| [docs/design-compliance-audit.md](docs/design-compliance-audit.md)                     | 设计合规审计记录                                   |
+| 文档                               | 内容                                |
+| ---------------------------------- | ----------------------------------- |
+| [docs/PRODUCT.md](docs/PRODUCT.md) | 产品定位、核心面、语气              |
+| [docs/DESIGN.md](docs/DESIGN.md)   | UI 视觉与交互规范（实现以代码为准） |
 
 ## 边界（不做）
 
