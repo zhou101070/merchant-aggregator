@@ -293,9 +293,22 @@ export class SearchService {
       params.merchantName = req.merchantName.trim()
     }
     if (req.titleContains?.length) {
+      // Substring match, but drop titles that explicitly negate the term
+      // (e.g. Plus chip must not hit 「非PLUS」「不含plus」).
+      const negPrefixes = ['非', '不含', '无', '不带', '不是'] as const
       req.titleContains.forEach((t, i) => {
-        params[`tc${i}`] = likeContains(t)
+        const term = t.trim()
+        if (!term) return
+        params[`tc${i}`] = likeContains(term)
         where.push(`s.title LIKE @tc${i} ESCAPE '\\'`)
+        negPrefixes.forEach((p, j) => {
+          const glued = `tcn${i}_${j}`
+          const spaced = `tcns${i}_${j}`
+          params[glued] = likeContains(`${p}${term}`)
+          params[spaced] = likeContains(`${p} ${term}`)
+          where.push(`s.title NOT LIKE @${glued} ESCAPE '\\'`)
+          where.push(`s.title NOT LIKE @${spaced} ESCAPE '\\'`)
+        })
       })
     }
   }

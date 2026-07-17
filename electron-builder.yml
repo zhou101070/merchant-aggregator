@@ -1,5 +1,6 @@
-appId: com.electron.app
-productName: merchant-aggregator
+# appId 须与 main/index.ts 的 setAppUserModelId 一致,否则 Windows 任务栏固定/通知身份异常
+appId: com.merchant-aggregator
+productName: Merchant Aggregator
 directories:
   buildResources: build
 files:
@@ -15,6 +16,9 @@ win:
   executableName: merchant-aggregator
   icon: build/icon.ico
 nsis:
+  # 引导式安装器:逐页向导(安装范围 → 安装目录 → 进度 → 完成页),而非双击即装
+  oneClick: false
+  allowToChangeInstallationDirectory: true
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
@@ -22,15 +26,11 @@ nsis:
 mac:
   icon: build/icon.icns
   entitlementsInherit: build/entitlements.mac.plist
-  extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:
+  executableName: merchant-aggregator
   icon: build/icon.png
   target:
     - AppImage

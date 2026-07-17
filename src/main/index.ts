@@ -30,9 +30,9 @@ function themeBackground(): string {
 }
 
 /**
- * 设计审查截图钩子(dev 工具):
- * MA_SCREENSHOT_DIR=/path MA_THEME=dark|light pnpm dev
- * 逐路由截图后自动退出。
+ * 设计审查截图钩子(dev 工具),逐路由截图后自动退出:
+ * POSIX:      MA_SCREENSHOT_DIR=/path MA_THEME=dark|light pnpm dev
+ * PowerShell: $env:MA_SCREENSHOT_DIR='D:\shots'; $env:MA_THEME='dark'; pnpm dev
  */
 async function runScreenshotMode(win: BrowserWindow, dir: string): Promise<void> {
   // 深链一个真实 ldxp 商家,截到主从详情态

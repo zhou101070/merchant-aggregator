@@ -18,6 +18,13 @@ export default defineConfig(
     }
   },
   {
+    // 纯 JS 工具脚本(scripts/*.mjs 等)无法书写 TS 返回类型标注
+    files: ['**/*.mjs'],
+    rules: {
+      '@typescript-eslint/explicit-function-return-type': 'off'
+    }
+  },
+  {
     files: ['**/*.{ts,tsx}'],
     plugins: {
       'react-hooks': eslintPluginReactHooks,

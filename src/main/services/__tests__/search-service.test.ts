@@ -304,4 +304,65 @@ describe('SearchService local-only shop_products', () => {
       closeDatabase(db)
     }
   })
+
+  it('titleContains excludes negated terms (非/不含 Plus)', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'ChatGPT plus/pro 国内镜像站',
+          price: 1
+        },
+        {
+          id: 's2',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g2',
+          title: 'Gpt Free | 非PLUS | outlook',
+          price: 0.49
+        },
+        {
+          id: 's3',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g3',
+          title: '全新微软邮箱，已注册好ChatGPT (不含plus)',
+          price: 0.54
+        },
+        {
+          id: 's4',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g4',
+          title: 'iCloud 隐私邮箱 开plus（绑定专用）',
+          price: 0.77
+        },
+        {
+          id: 's5',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g5',
+          title: 'Claude 月卡 无 Plus',
+          price: 2
+        }
+      ])
+
+      const search = new SearchService(db)
+      const res = search.query({ titleContains: ['Plus'], sort: 'price', sortDir: 'asc' })
+      const titles = res.hits.map((h) => h.title)
+      expect(titles).toContain('ChatGPT plus/pro 国内镜像站')
+      expect(titles).toContain('iCloud 隐私邮箱 开plus（绑定专用）')
+      expect(titles.some((t) => /非PLUS/i.test(t))).toBe(false)
+      expect(titles.some((t) => t.includes('不含plus'))).toBe(false)
+      expect(titles.some((t) => t.includes('无 Plus'))).toBe(false)
+      expect(res.total).toBe(2)
+    } finally {
+      closeDatabase(db)
+    }
+  })
 })

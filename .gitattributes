@@ -1,0 +1,7 @@
+# 统一 LF(与 .editorconfig / prettier 对齐),避免 mac/Windows 协作时行尾漂移
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
