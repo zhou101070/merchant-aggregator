@@ -60,8 +60,10 @@ function SyncWidget(): React.JSX.Element {
           <span className="sync-counts">
             <span>商家</span>
             <span className="num">{status?.counts.merchants ?? 0}</span>
-            <span>ldxp</span>
-            <span className="num">{status?.counts.ldxpMerchants ?? 0}</span>
+            <span>可刮</span>
+            <span className="num">
+              {status?.counts.scrapableMerchants ?? status?.counts.ldxpMerchants ?? 0}
+            </span>
             <span>店内商品</span>
             <span className="num">{status?.counts.shopProducts ?? 0}</span>
           </span>
@@ -92,6 +94,29 @@ export default function App(): React.JSX.Element {
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [navigate])
+
+  // Win WCO 在网页之上,CSS 蒙层盖不住窗控;dialog 开关时同步调暗 titleBarOverlay
+  useEffect(() => {
+    let lastOpen = false
+    const sync = (): void => {
+      const open = document.querySelector('dialog[open]') != null
+      if (open === lastOpen) return
+      lastOpen = open
+      void window.api.window.setDialogOverlay(open)
+    }
+    const mo = new MutationObserver(sync)
+    mo.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['open']
+    })
+    sync()
+    return () => {
+      mo.disconnect()
+      if (lastOpen) void window.api.window.setDialogOverlay(false)
+    }
+  }, [])
 
   return (
     <ToastProvider>

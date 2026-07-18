@@ -1,8 +1,11 @@
 import type { SavedSearch } from './saved-search'
-import { RATE_LIMITS, RECENT_SEARCHES_MAX } from '../constants'
+import { RATE_LIMITS, RECENT_SEARCHES_MAX, SHOP_API_LIMITS } from '../constants'
 import { normalizeSavedSearches } from '../lib/saved-searches'
 
-export type OpenExternalMode = 'allowlist_confirm' | 'allowlist_reject' | 'https_only'
+/** 外观主题:跟随系统 / 强制浅色 / 强制深色 */
+export type ThemeMode = 'system' | 'light' | 'dark'
+
+const THEME_MODES = new Set<ThemeMode>(['system', 'light', 'dark'])
 
 export interface AppSettings {
   networkPaused: boolean
@@ -12,6 +15,8 @@ export interface AppSettings {
   shopFreshHours: number
   /** Canonical: min interval between shop API requests */
   shopMinIntervalMs: number
+  /** ShopAPI: concurrent goodsList pages per goods type */
+  shopPageConcurrency: number
   /** Canonical: allow shop deep-scrape jobs */
   shopScrapeEnabled: boolean
   /**
@@ -23,16 +28,21 @@ export interface AppSettings {
    * @deprecated dual-written with shopScrapeEnabled for one release.
    */
   ldxpScrapeEnabled: boolean
-  /** allowlist hosts open directly; non-allowlist confirm first (K24) */
-  openExternalMode: OpenExternalMode
-  allowlistHosts: string[]
   notifyOnJobFinished: boolean
+  /** 外观主题,默认 system */
+  theme: ThemeMode
   /** 最近搜索关键词(新在前)，上限见 RECENT_SEARCHES_MAX */
   recentSearches: string[]
   /** 搜索标题排除词(持久化，启动即生效) */
   searchExcludeWords: string[]
   /** 用户主动保存的常用搜索(新在前)，上限见 SAVED_SEARCHES_MAX */
   savedSearches: SavedSearch[]
+}
+
+function asThemeMode(value: unknown, fallback: ThemeMode): ThemeMode {
+  return typeof value === 'string' && THEME_MODES.has(value as ThemeMode)
+    ? (value as ThemeMode)
+    : fallback
 }
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -48,10 +58,7 @@ export function coalesceAppSettings(
   defaults: AppSettings,
   partial: Partial<AppSettings> | null | undefined
 ): AppSettings {
-  const base: AppSettings = {
-    ...defaults,
-    allowlistHosts: [...defaults.allowlistHosts]
-  }
+  const base: AppSettings = { ...defaults }
   if (!partial) return base
 
   const shopScrapeRaw = partial.shopScrapeEnabled ?? partial.ldxpScrapeEnabled
@@ -61,6 +68,15 @@ export function coalesceAppSettings(
   const shopMinIntervalMs = Math.max(
     RATE_LIMITS.shopMinIntervalMs.min,
     asFiniteNumber(shopMinRaw, base.shopMinIntervalMs)
+  )
+
+  const pageConcLim = SHOP_API_LIMITS.pageConcurrency
+  const shopPageConcurrency = Math.min(
+    pageConcLim.max,
+    Math.max(
+      pageConcLim.min,
+      Math.floor(asFiniteNumber(partial.shopPageConcurrency, base.shopPageConcurrency))
+    )
   )
 
   const recentSearches = Array.isArray(partial.recentSearches)
@@ -79,20 +95,23 @@ export function coalesceAppSettings(
       ? normalizeSavedSearches(partial.savedSearches)
       : base.savedSearches
 
-  return {
+  const next: AppSettings = {
     ...base,
     ...partial,
     shopScrapeEnabled,
     shopMinIntervalMs,
+    shopPageConcurrency,
     ldxpScrapeEnabled: shopScrapeEnabled,
     ldxpMinIntervalMs: shopMinIntervalMs,
-    allowlistHosts: Array.isArray(partial.allowlistHosts)
-      ? partial.allowlistHosts.filter((h): h is string => typeof h === 'string')
-      : base.allowlistHosts,
+    theme: asThemeMode(partial.theme, base.theme),
     recentSearches,
     searchExcludeWords,
     savedSearches
   }
+  // 剥离已废弃的白名单字段（旧 settings JSON 可能仍带）
+  delete (next as AppSettings & { openExternalMode?: unknown }).openExternalMode
+  delete (next as AppSettings & { allowlistHosts?: unknown }).allowlistHosts
+  return next
 }
 
 /** trim + 去空 + 保序去重 */
@@ -144,6 +163,20 @@ export function dualWriteSettingsPatch(partial: Partial<AppSettings>): Partial<A
       out.ldxpMinIntervalMs = n
     } else {
       delete out.ldxpMinIntervalMs
+    }
+  }
+  if (partial.shopPageConcurrency !== undefined) {
+    if (
+      typeof partial.shopPageConcurrency === 'number' &&
+      Number.isFinite(partial.shopPageConcurrency)
+    ) {
+      const lim = SHOP_API_LIMITS.pageConcurrency
+      out.shopPageConcurrency = Math.min(
+        lim.max,
+        Math.max(lim.min, Math.floor(partial.shopPageConcurrency))
+      )
+    } else {
+      delete out.shopPageConcurrency
     }
   }
   if (Array.isArray(partial.recentSearches)) {

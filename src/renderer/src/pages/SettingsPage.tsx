@@ -1,56 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { BlockedTarget } from '@shared/types/blocklist'
-import type { AppSettings } from '@shared/types/settings'
-import { Button, Empty, Input, Switch } from '../components/ui'
+import { SHOP_API_LIMITS } from '@shared/constants'
+import type { AppSettings, ThemeMode } from '@shared/types/settings'
+import { Button, Empty, Switch } from '../components/ui'
+import { PageHeader, PanelHeader } from '../components/layout'
+import { NumberField, SettingsRow } from '../components/settings-fields'
 import { Select } from '../components/select'
 import { useToast } from '../components/use-toast'
 import { timeAgo } from '../lib/format-time'
-
-/** 单行设置项：左侧 label + 说明，右侧控件 */
-function Row({
-  label,
-  desc,
-  children
-}: {
-  label: string
-  desc?: string
-  children: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <div className="settings-row">
-      <div className="s-main">
-        <div className="s-label">{label}</div>
-        {desc ? <div className="s-desc">{desc}</div> : null}
-      </div>
-      <div className="s-ctrl">{children}</div>
-    </div>
-  )
-}
-
-/** 数字输入：失焦提交，非法值回退(key 随 value 变化重挂载，无需状态同步) */
-function NumberField({
-  value,
-  min,
-  onCommit
-}: {
-  value: number
-  min: number
-  onCommit: (v: number) => void
-}): React.JSX.Element {
-  return (
-    <Input
-      key={value}
-      type="number"
-      min={min}
-      defaultValue={value}
-      onBlur={(e) => {
-        const v = Number(e.target.value)
-        if (Number.isFinite(v) && v >= min && v !== value) onCommit(v)
-        else e.target.value = String(value)
-      }}
-    />
-  )
-}
 
 export function SettingsPage(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
@@ -91,96 +48,103 @@ export function SettingsPage(): React.JSX.Element {
 
   return (
     <div className="stack">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">设置</h1>
-          <div className="page-meta">同步节奏、外链策略与诊断</div>
-        </div>
-      </div>
+      <PageHeader title="设置" meta="外观、同步节奏与诊断" />
 
       <div className="settings">
         <div className="panel">
-          <div className="panel-head">
-            <strong>同步</strong>
-          </div>
-          <Row label="暂停所有网络同步" desc="打开后所有同步入口置灰；本地搜索与浏览不受影响">
+          <PanelHeader title="外观" />
+          <SettingsRow label="主题" desc="默认跟随系统；可强制浅色或深色">
+            <Select<ThemeMode>
+              ariaLabel="主题"
+              value={settings.theme}
+              onValueChange={(v) => void save({ theme: v })}
+              options={[
+                { value: 'system', label: '跟随系统' },
+                { value: 'light', label: '浅色' },
+                { value: 'dark', label: '深色' }
+              ]}
+            />
+          </SettingsRow>
+        </div>
+
+        <div className="panel">
+          <PanelHeader title="同步" />
+          <SettingsRow label="暂停所有网络同步" desc="打开后所有同步入口置灰；本地搜索与浏览不受影响">
             <Switch
               label="暂停所有网络同步"
               checked={settings.networkPaused}
               onChange={(v) => void save({ networkPaused: v })}
             />
-          </Row>
-          <Row label="允许店铺深刮" desc="价格来源；关闭后不再访问发卡网，已同步数据保留">
+          </SettingsRow>
+          <SettingsRow label="允许店铺深刮" desc="价格来源；关闭后不再访问发卡网，已同步数据保留">
             <Switch
               label="允许店铺深刮"
               checked={settings.shopScrapeEnabled ?? settings.ldxpScrapeEnabled}
               onChange={(v) => void save({ shopScrapeEnabled: v })}
             />
-          </Row>
-          <Row label="PriceAI 请求间隔" desc="商家列表分页抓取的间隔">
+          </SettingsRow>
+          <SettingsRow label="PriceAI 请求间隔" desc="商家列表分页抓取的间隔">
             <NumberField
               value={settings.requestIntervalMs}
               min={100}
               onCommit={(v) => void save({ requestIntervalMs: v })}
             />
             <span className="unit">ms</span>
-          </Row>
-          <Row label="店铺最小间隔" desc="串行深刮相邻两店之间的最小间隔">
+          </SettingsRow>
+          <SettingsRow label="店铺最小间隔" desc="串行深刮相邻两店之间的最小间隔">
             <NumberField
               value={settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs}
               min={100}
               onCommit={(v) => void save({ shopMinIntervalMs: v })}
             />
             <span className="unit">ms</span>
-          </Row>
-          <Row label="价格新鲜期" desc="增量同步跳过期限内成功的店；超龄价格在结果中标注">
+          </SettingsRow>
+          <SettingsRow
+            label="分页并发"
+            desc={`单店商品列表一次并行请求的页数（${SHOP_API_LIMITS.pageConcurrency.min}–${SHOP_API_LIMITS.pageConcurrency.max}，过大易触发风控）`}
+          >
+            <NumberField
+              value={settings.shopPageConcurrency}
+              min={SHOP_API_LIMITS.pageConcurrency.min}
+              max={SHOP_API_LIMITS.pageConcurrency.max}
+              onCommit={(v) => void save({ shopPageConcurrency: v })}
+            />
+            <span className="unit">页</span>
+          </SettingsRow>
+          <SettingsRow label="价格新鲜期" desc="增量同步跳过期限内成功的店；超龄价格在结果中标注">
             <NumberField
               value={settings.shopFreshHours}
               min={1}
               onCommit={(v) => void save({ shopFreshHours: v })}
             />
             <span className="unit">小时</span>
-          </Row>
-          <Row label="同步完成通知" desc="任务结束时发送系统通知（需系统允许通知权限）">
+          </SettingsRow>
+          <SettingsRow label="同步完成通知" desc="任务结束时发送系统通知（需系统允许通知权限）">
             <Switch
               label="同步完成通知"
               checked={settings.notifyOnJobFinished}
               onChange={(v) => void save({ notifyOnJobFinished: v })}
             />
-          </Row>
+          </SettingsRow>
         </div>
 
         <div className="panel">
-          <div className="panel-head">
-            <strong>外链</strong>
-          </div>
-          <Row label="打开源站方式" desc="所有外链仅限 https；直开绝不附带任何本地数据">
-            <Select
-              ariaLabel="打开源站方式"
-              value={settings.openExternalMode}
-              onValueChange={(v) => void save({ openExternalMode: v })}
-              options={[
-                { value: 'allowlist_confirm', label: '白名单直开 / 其他确认' },
-                { value: 'allowlist_reject', label: '仅白名单' },
-                { value: 'https_only', label: '任意 https（不推荐）' }
-              ]}
-            />
-          </Row>
-        </div>
-
-        <div className="panel">
-          <div className="panel-head">
-            <strong>屏蔽名单</strong>
-            <span className="sub">
-              {blocked.length ? `${blocked.length} 条 · ` : ''}
-              搜索与比价默认排除；收藏仍保留
-            </span>
-            {blocked.length ? (
-              <Button variant="ghost" size="s" onClick={() => void clearBlocklist()}>
-                清空
-              </Button>
-            ) : null}
-          </div>
+          <PanelHeader
+            title="屏蔽名单"
+            sub={
+              <>
+                {blocked.length ? `${blocked.length} 条 · ` : ''}
+                搜索默认排除；收藏仍保留
+              </>
+            }
+            actions={
+              blocked.length ? (
+                <Button variant="ghost" size="s" onClick={() => void clearBlocklist()}>
+                  清空
+                </Button>
+              ) : null
+            }
+          />
           {blocked.length === 0 ? (
             <Empty title="暂无屏蔽">在搜索结果点「屏蔽 / 屏蔽店」，或在商家详情点「屏蔽」。</Empty>
           ) : (

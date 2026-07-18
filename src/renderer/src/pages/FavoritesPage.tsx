@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import type { Favorite, RecentView } from '@shared/types/favorites'
-import type { SearchHit } from '@shared/types/search'
-import { CompareDrawer } from '../components/compare-drawer'
 import { CopyLinkButton } from '../components/copy-link-button'
 import { Badge, Button, Empty, IconButton, Input, Price } from '../components/ui'
+import { PageHeader, PanelHeader } from '../components/layout'
 import { Icon } from '../components/icons'
 import { useToast } from '../components/use-toast'
 import { useSyncStatus } from '../hooks/useSync'
+import { useSyncTerminalTick } from '../hooks/useSyncTerminalTick'
 import { openExternalSafe } from '../lib/open-external'
 import { timeAgo } from '../lib/format-time'
 import { resolveShopRef } from '../lib/shop-ref'
@@ -92,26 +92,12 @@ export function FavoritesPage(): React.JSX.Element {
   const [editingKey, setEditingKey] = useState<string | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
   const [targetDraft, setTargetDraft] = useState('')
-  const [compareTitle, setCompareTitle] = useState<string | null>(null)
-
-  const openCompareHit = useCallback(async (hit: SearchHit): Promise<void> => {
-    await window.api.recent.touch({
-      targetType: hit.kind,
-      targetId: hit.id,
-      titleSnapshot: hit.title
-    })
-    await openExternalSafe(hit.sourceUrl)
-  }, [])
-
   const reload = useCallback(async (): Promise<void> => {
     setFavorites(await window.api.favorites.list())
     setRecent(await window.api.recent.list(40))
   }, [])
 
-  const syncTick =
-    progress && ['succeeded', 'failed', 'partial', 'cancelled'].includes(progress.status)
-      ? `${progress.jobId}:${progress.status}`
-      : ''
+  const syncTick = useSyncTerminalTick(progress)
   useEffect(() => {
     void reload()
   }, [reload, syncTick, status?.counts.shopProducts])
@@ -230,101 +216,71 @@ export function FavoritesPage(): React.JSX.Element {
 
   return (
     <div className="stack">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">收藏与最近</h1>
-          <div className="page-meta">当前价 vs 收藏基线；可设目标价与备注；刷新店后看涨跌</div>
-        </div>
-        <div className="page-actions">
-          <Button
-            disabled={busy || refreshing || !refreshTargets.length}
-            onClick={() => void refreshFavoriteShops()}
-            title="按平台+token 重新抓取收藏涉及的店铺（含无商家主档的 orphan）"
-          >
-            <Icon name="refresh" size={14} />
-            刷新收藏的店{refreshTargets.length ? `(${refreshTargets.length})` : ''}
-          </Button>
-          <Button variant="ghost" onClick={() => void reload()}>
-            刷新列表
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="收藏与最近"
+        meta="当前价 vs 收藏基线；可设目标价与备注；刷新店后看涨跌"
+        actions={
+          <>
+            <Button
+              disabled={busy || refreshing || !refreshTargets.length}
+              onClick={() => void refreshFavoriteShops()}
+              title="按平台+token 重新抓取收藏涉及的店铺（含无商家主档的 orphan）"
+            >
+              <Icon name="refresh" size={14} />
+              刷新收藏的店{refreshTargets.length ? `(${refreshTargets.length})` : ''}
+            </Button>
+            <Button variant="ghost" onClick={() => void reload()}>
+              刷新列表
+            </Button>
+          </>
+        }
+      />
 
       <div className="panel">
-        <div className="panel-head">
-          <strong>最近浏览</strong>
-          <span className="sub">
-            {recent.length ? `${recent.length} 条 · ` : ''}
-            商家直达详情；商品可开源站或按标题重搜
-          </span>
-        </div>
+        <PanelHeader
+          title="最近浏览"
+          sub={
+            <>
+              {recent.length ? `${recent.length} 条 · ` : ''}
+              点标题进入；商品可开源站
+            </>
+          }
+        />
         {recent.length === 0 ? (
           <Empty title="暂无最近浏览">打开源站或查看商家详情后，会出现在这里。</Empty>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>标题</th>
-                <th>类型</th>
-                <th>时间</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((r) => {
-                const itemUrl = recentItemUrl(r)
-                return (
-                  <tr
-                    key={`${r.targetType}:${r.targetId}:${r.viewedAt}`}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => openRecent(r)}
-                  >
-                    <td>
-                      <div className="ellipsis" style={{ maxWidth: 420 }}>
-                        {r.titleSnapshot ?? r.targetId}
-                      </div>
-                    </td>
-                    <td className="small muted">{typeLabel(r.targetType)}</td>
-                    <td className="small muted" title={r.viewedAt}>
-                      {timeAgo(r.viewedAt)}
-                    </td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <div className="row-actions">
-                        {itemUrl ? (
-                          <>
-                            <IconButton
-                              label="打开源站"
-                              onClick={() => void openExternalSafe(itemUrl)}
-                            >
-                              <Icon name="external" size={14} />
-                            </IconButton>
-                            <CopyLinkButton url={itemUrl} />
-                          </>
-                        ) : null}
-                        {r.targetType === 'shop_product' && r.titleSnapshot ? (
-                          <button
-                            className="linkish"
-                            type="button"
-                            onClick={() => setCompareTitle(r.titleSnapshot)}
-                          >
-                            比价
-                          </button>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+          <div className="recent-chips">
+            {recent.map((r) => {
+              const itemUrl = recentItemUrl(r)
+              const title = r.titleSnapshot ?? r.targetId
+              const kind = r.targetType === 'merchant' ? '店' : '品'
+              return (
+                <div
+                  key={`${r.targetType}:${r.targetId}:${r.viewedAt}`}
+                  className="recent-chip"
+                  title={`${typeLabel(r.targetType)} · ${timeAgo(r.viewedAt)}`}
+                >
+                  <button type="button" className="recent-chip-main" onClick={() => openRecent(r)}>
+                    <span className="recent-chip-kind">{kind}</span>
+                    <span className="recent-chip-title">{title}</span>
+                    <span className="recent-chip-time">{timeAgo(r.viewedAt)}</span>
+                  </button>
+                  {itemUrl ? (
+                    <span className="recent-chip-actions">
+                      <IconButton label="打开源站" onClick={() => void openExternalSafe(itemUrl)}>
+                        <Icon name="external" size={12} />
+                      </IconButton>
+                    </span>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
         )}
       </div>
 
       <div className="panel">
-        <div className="panel-head">
-          <strong>收藏</strong>
-          <span className="sub">{favorites.length ? `${favorites.length} 条` : ''}</span>
-        </div>
+        <PanelHeader title="收藏" sub={favorites.length ? `${favorites.length} 条` : ''} />
         {favorites.length === 0 ? (
           <Empty title="暂无收藏">在搜索结果或商家详情中点「收藏」，之后在这里跟踪当前价。</Empty>
         ) : (
@@ -499,21 +455,12 @@ export function FavoritesPage(): React.JSX.Element {
                           </button>
                         ) : null}
                         {f.targetType === 'shop_product' && f.titleSnapshot ? (
-                          <>
-                            <button
-                              className="linkish"
-                              type="button"
-                              onClick={() => setCompareTitle(f.titleSnapshot!)}
-                            >
-                              比价
-                            </button>
-                            <Link
-                              to={`/?q=${encodeURIComponent(f.titleSnapshot)}`}
-                              className="linkish"
-                            >
-                              按标题搜
-                            </Link>
-                          </>
+                          <Link
+                            to={`/?q=${encodeURIComponent(f.titleSnapshot)}`}
+                            className="linkish"
+                          >
+                            按标题搜
+                          </Link>
                         ) : null}
                         <button
                           className="linkish"
@@ -538,12 +485,6 @@ export function FavoritesPage(): React.JSX.Element {
           </table>
         )}
       </div>
-
-      <CompareDrawer
-        title={compareTitle}
-        onClose={() => setCompareTitle(null)}
-        onOpenHit={openCompareHit}
-      />
     </div>
   )
 }

@@ -13,6 +13,7 @@ const JOB_TYPE_LABEL: Record<string, string> = {
 const PHASE_LABEL: Record<string, string> = {
   starting: '启动',
   merchants: '拉商家',
+  fingerprint: '指纹探测',
   shops: '刮店铺',
   shop: '刮店铺',
   goods: '拉商品',

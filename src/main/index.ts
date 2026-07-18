@@ -17,6 +17,12 @@ import { SearchService } from './services/search-service'
 import { createLogger } from './utils/logger'
 import { ensureSystemProxy } from './utils/main-fetch'
 import { evaluateOpenExternal } from './utils/url-safety'
+import { applyThemeSource } from './theme'
+import {
+  TITLEBAR_OVERLAY_HEIGHT,
+  applyWindowChrome,
+  baseThemeChrome
+} from './window-chrome'
 
 const log = createLogger('main')
 
@@ -24,35 +30,6 @@ let db: Database.Database | null = null
 let repos: Repositories | null = null
 let sync: SyncOrchestrator | null = null
 let search: SearchService | null = null
-
-/** Windows 标题栏叠层高度;渲染层用 env(titlebar-area-height) 对齐 */
-const TITLEBAR_OVERLAY_HEIGHT = 36
-
-/**
- * 窗口铬色与 tokens.css 对齐,避免标题栏/内容「两层皮」(DESIGN.md §2 / §8.3)
- * hex 为 OKLCH 令牌的近似值,仅主进程 BrowserWindow API 使用。
- */
-function themeChrome(): { background: string; symbol: string } {
-  if (nativeTheme.shouldUseDarkColors) {
-    // --bg / --ink 深色
-    return { background: '#0f0e0c', symbol: '#eae8e3' }
-  }
-  // --bg / --ink 浅色
-  return { background: '#f8f7f4', symbol: '#1d1a14' }
-}
-
-function applyWindowChrome(win: BrowserWindow): void {
-  if (win.isDestroyed()) return
-  const { background, symbol } = themeChrome()
-  win.setBackgroundColor(background)
-  if (process.platform === 'win32') {
-    win.setTitleBarOverlay({
-      color: background,
-      symbolColor: symbol,
-      height: TITLEBAR_OVERLAY_HEIGHT
-    })
-  }
-}
 
 /**
  * 设计审查截图钩子(dev 工具),逐路由截图后自动退出:
@@ -123,7 +100,7 @@ function createWindow(): void {
     app.dock?.setIcon(appIcon)
   }
 
-  const chrome = themeChrome()
+  const chrome = baseThemeChrome()
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -164,11 +141,9 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    // Always deny popup creation; mirror shell:openExternal policy (no confirm UI here).
+    // Always deny popup creation; open allowed http(s) in system browser.
     try {
-      const settings = repos?.settings.get()
-      if (!settings) return { action: 'deny' as const }
-      const decision = evaluateOpenExternal(details.url, settings)
+      const decision = evaluateOpenExternal(details.url)
       if (decision.action === 'allow') {
         void shell.openExternal(details.url)
       }
@@ -206,11 +181,6 @@ app.whenReady().then(() => {
   // Windows 任务栏分组 / 通知图标身份（须与 electron-builder appId 一致时更稳）
   electronApp.setAppUserModelId('com.merchant-aggregator')
 
-  const forcedTheme = process.env['MA_THEME']
-  if (forcedTheme === 'dark' || forcedTheme === 'light') {
-    nativeTheme.themeSource = forcedTheme
-  }
-
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
@@ -224,6 +194,9 @@ app.whenReady().then(() => {
     app.quit()
     return
   }
+
+  // 建窗前应用主题,避免首帧闪错色;MA_THEME 在 applyThemeSource 内优先
+  applyThemeSource(repos!.settings.get().theme)
 
   void ensureSystemProxy()
   createWindow()

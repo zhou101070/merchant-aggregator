@@ -27,15 +27,14 @@ export interface ShopProductListQuery {
   limit: number
 }
 
-/** Weak compare by title across shop products (no PriceAI catalog). */
-export type CompareRequest = { titleNorm: string }
-
-export interface CompareResult {
-  mode: 'weak_title'
-  product: null
-  rows: import('./search').SearchHit[]
-  /** UI banner: explain weak aggregation / token overlap */
-  notice?: string
-  /** Tokens used for matching */
-  tokens?: string[]
+/** Single-product stock refresh (keywords + goods_key match, not full shop scrape). */
+export interface RefreshStockRequest {
+  /** shop_products.id or search hit id `shop:{id}` */
+  productId: string
 }
+
+export type RefreshStockResult =
+  | { status: 'updated'; productId: string; stock: number; product: ShopProduct }
+  | { status: 'removed'; productId: string; stock: number | null }
+  | { status: 'not_found'; productId: string }
+

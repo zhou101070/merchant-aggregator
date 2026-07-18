@@ -1,6 +1,7 @@
 /*
  * tokens.css — 唯一的设计令牌事实源(见 DESIGN.md §3–§6)
- * 双主题经 light-dark() 跟随系统;组件样式只允许引用这里的令牌。
+ * 双主题经 light-dark();由 nativeTheme.themeSource 决定(默认 system)。
+ * 组件样式只允许引用这里的令牌。
  */
 :root {
   color-scheme: light dark;

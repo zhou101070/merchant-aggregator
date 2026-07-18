@@ -42,22 +42,70 @@ export type RankContext = {
   nowMs?: number
 }
 
+/**
+ * Surface forms for letter+version tokens so titles with "Grok 7" / "Grok-7" / "Grok7"
+ * share recall with query "grok7" or "grok 7".
+ */
+export function alnumSurfaceForms(token: string): string[] {
+  const n = nameNorm(token)
+  if (!n) return []
+  const m = n.match(/^([a-z]+)(\d+[a-z0-9.]*)$/i)
+  if (!m) return [n]
+  const base = m[1]
+  const ver = m[2]
+  return [...new Set([`${base}${ver}`, `${base} ${ver}`, `${base}-${ver}`])]
+}
+
+const ALPHA_WORD = /^[a-z]+$/i
+const VERSION_TAIL = /^\d+[a-z0-9.]*$/i
+
 /** Expand one token into its synonym group (includes itself). */
 export function synonymGroup(token: string): string[] {
   const n = nameNorm(token)
   if (!n) return []
-  for (const cluster of SYNONYM_CLUSTERS) {
-    const norms = cluster.map((c) => nameNorm(c)).filter(Boolean)
-    if (norms.includes(n)) {
-      return [...new Set([n, ...norms])]
+  const surfaces = alnumSurfaceForms(n)
+  const out = new Set<string>(surfaces)
+  for (const form of surfaces) {
+    for (const cluster of SYNONYM_CLUSTERS) {
+      const norms = cluster.map((c) => nameNorm(c)).filter(Boolean)
+      if (norms.includes(form)) {
+        for (const x of norms) out.add(x)
+        // also expand surface variants of each cluster member that looks glued
+        for (const x of norms) {
+          for (const s of alnumSurfaceForms(x)) out.add(s)
+        }
+      }
     }
   }
-  return [n]
+  return [...out]
 }
 
-/** Build synonym groups for a token list (query order preserved). */
+/**
+ * Build synonym groups (query order preserved).
+ * - Letter+version (gpt+4 / grok+7): if glued form is in a product synonym cluster
+ *   (e.g. gpt4→chatgpt), collapse to one group; otherwise keep two groups so
+ *   "grok … 7" matches non-adjacent ordered titles via AND.
+ */
 export function expandTokenGroups(tokens: string[]): string[][] {
-  return tokens.map((t) => synonymGroup(t)).filter((g) => g.length > 0)
+  const groups: string[][] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const a = tokens[i]
+    const b = tokens[i + 1]
+    if (b && ALPHA_WORD.test(a) && VERSION_TAIL.test(b)) {
+      const glued = `${a}${b}`
+      const surfaces = new Set(alnumSurfaceForms(glued))
+      const syn = synonymGroup(glued)
+      const hasProductSyn = syn.some((s) => !surfaces.has(s))
+      if (hasProductSyn) {
+        groups.push(syn)
+        i += 1
+        continue
+      }
+    }
+    const g = synonymGroup(a)
+    if (g.length) groups.push(g)
+  }
+  return groups
 }
 
 /** Smooth IDF: log((N+1)/(df+1)) + 1, floor 1. */

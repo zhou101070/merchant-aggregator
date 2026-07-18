@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useState } from 'react'
 import type {
   SyncHistoryStatusFilter,
   SyncJobRecord,
   SyncProgressEvent
 } from '@shared/types/sync'
 import { Button, Empty, IconButton, Progress, StatusDot } from '../components/ui'
+import { PageHeader, PanelHeader } from '../components/layout'
+import { ModalDialog } from '../components/modal-dialog'
+import { useModalDismiss } from '../components/use-modal-dismiss'
 import { Pagination } from '../components/pagination'
 import { Select } from '../components/select'
 import { Icon } from '../components/icons'
@@ -114,8 +116,23 @@ function JobDetailDialog({
   onClose: () => void
   onRetry: (errors: JobErrorEntry[]) => void
 }): React.JSX.Element {
-  const dialogRef = useRef<HTMLDialogElement>(null)
-  const closedRef = useRef(false)
+  return (
+    <ModalDialog openKey={job.id} onClose={onClose}>
+      <JobDetailBody job={job} busy={busy} onRetry={onRetry} />
+    </ModalDialog>
+  )
+}
+
+function JobDetailBody({
+  job,
+  busy,
+  onRetry
+}: {
+  job: SyncJobRecord
+  busy: boolean
+  onRetry: (errors: JobErrorEntry[]) => void
+}): React.JSX.Element {
+  const dismiss = useModalDismiss()
   const errors = jobErrors(job.meta)
   const failure = jobFailure(job.meta)
   const ok = metaNumber(job.meta, 'ok')
@@ -126,39 +143,8 @@ function JobDetailDialog({
   const failureDetails = formatDetails(failure?.details)
   const canRetry = errors.some((e) => e.merchantId)
 
-  function dismiss(): void {
-    if (closedRef.current) return
-    closedRef.current = true
-    const el = dialogRef.current
-    if (el?.open) el.close()
-    onClose()
-  }
-
-  useLayoutEffect(() => {
-    const el = dialogRef.current
-    if (!el) return
-    closedRef.current = false
-    try {
-      if (!el.open) el.showModal()
-    } catch {
-      el.setAttribute('open', '')
-    }
-  }, [job.id])
-
-  return createPortal(
-    <dialog
-      ref={dialogRef}
-      className="dialog dialog-wide"
-      onClose={() => {
-        if (closedRef.current) return
-        closedRef.current = true
-        onClose()
-      }}
-      onCancel={(e) => {
-        e.preventDefault()
-        dismiss()
-      }}
-    >
+  return (
+    <>
       <div className="dialog-body">
         <div className="dialog-head">
           <h2 className="dialog-title">{jobTypeLabel(job.jobType)} · 任务详情</h2>
@@ -181,11 +167,7 @@ function JobDetailDialog({
             </div>
             {job.status === 'running' || job.status === 'pending' ? (
               <div style={{ marginTop: 8, maxWidth: 280 }}>
-                <Progress
-                  current={job.current}
-                  total={job.total}
-                  indeterminate={!job.total}
-                />
+                <Progress current={job.current} total={job.total} indeterminate={!job.total} />
                 <div className="small muted" style={{ marginTop: 6 }}>
                   {formatSyncProgress(job)}
                 </div>
@@ -252,7 +234,10 @@ function JobDetailDialog({
                 const ref = e.platformId ? `${e.platformId}:${e.token}` : e.token
                 return (
                   <li key={`${ref}-${i}`} className="job-err-card">
-                    <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+                    <div
+                      className="row"
+                      style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}
+                    >
                       <span className="mono">{ref}</span>
                       {e.code ? <span className="mono small muted">{e.code}</span> : null}
                       {e.merchantId ? (
@@ -260,9 +245,7 @@ function JobDetailDialog({
                       ) : null}
                     </div>
                     <div className="job-detail-msg">{e.message}</div>
-                    {e.code ? (
-                      <div className="small muted">{errorHint(e.code) ?? ''}</div>
-                    ) : null}
+                    {e.code ? <div className="small muted">{errorHint(e.code) ?? ''}</div> : null}
                     {d ? <pre className="job-err-pre">{d}</pre> : null}
                   </li>
                 )
@@ -292,8 +275,7 @@ function JobDetailDialog({
           </Button>
         </div>
       ) : null}
-    </dialog>,
-    document.body
+    </>
   )
 }
 
@@ -426,28 +408,28 @@ export function SyncCenterPage(): React.JSX.Element {
 
   return (
     <div className="stack">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">同步</h1>
-          <div className="page-meta">商家来自 PriceAI · 价格来自发卡网深刮 · 全部手动发起</div>
-        </div>
-        <div className="page-actions">
-          {busy ? <Button onClick={() => void cancelRunning()}>取消</Button> : null}
-          <Button disabled={busy} onClick={() => void startMerchants()}>
-            同步商家列表
-          </Button>
-          <Button
-            variant="primary"
-            disabled={busy || scrapableMerchants === 0}
-            onClick={() => void syncShops()}
-          >
-            增量同步店铺
-          </Button>
-          <Button disabled={busy || scrapableMerchants === 0} onClick={() => void syncShops(true)}>
-            强制全量
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="同步"
+        meta="商家来自 PriceAI · 价格来自发卡网深刮 · 全部手动发起"
+        actions={
+          <>
+            {busy ? <Button onClick={() => void cancelRunning()}>取消</Button> : null}
+            <Button disabled={busy} onClick={() => void startMerchants()}>
+              同步商家列表
+            </Button>
+            <Button
+              variant="primary"
+              disabled={busy || scrapableMerchants === 0}
+              onClick={() => void syncShops()}
+            >
+              增量同步店铺
+            </Button>
+            <Button disabled={busy || scrapableMerchants === 0} onClick={() => void syncShops(true)}>
+              强制全量
+            </Button>
+          </>
+        }
+      />
 
       {error ? (
         <div className="panel" style={{ padding: '10px 14px' }}>
@@ -512,7 +494,13 @@ export function SyncCenterPage(): React.JSX.Element {
       </div>
 
       <div className="panel">
-        <div className="panel-head">
+        <PanelHeader
+          actions={
+            <Button disabled={!canClear} onClick={() => void clearHistory()}>
+              清空历史
+            </Button>
+          }
+        >
           <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <strong>任务历史</strong>
             <span className="sub">
@@ -532,10 +520,7 @@ export function SyncCenterPage(): React.JSX.Element {
               ]}
             />
           </div>
-          <Button disabled={!canClear} onClick={() => void clearHistory()}>
-            清空历史
-          </Button>
-        </div>
+        </PanelHeader>
         {!historyRows.length && !historyLoading ? (
           <Empty title={statusFilter === 'all' ? '还没有同步任务' : '没有符合筛选的任务'}>
             {statusFilter === 'all'

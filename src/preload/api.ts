@@ -13,7 +13,7 @@ export function createRendererApi(): RendererApi {
       list: (q) => ipcRenderer.invoke(IPC_CHANNELS.shopProductsList, q)
     },
     products: {
-      compare: (req) => ipcRenderer.invoke(IPC_CHANNELS.productsCompare, req)
+      refreshStock: (req) => ipcRenderer.invoke(IPC_CHANNELS.productsRefreshStock, req)
     },
     search: {
       query: (req) => ipcRenderer.invoke(IPC_CHANNELS.searchQuery, req)
@@ -54,14 +54,13 @@ export function createRendererApi(): RendererApi {
       set: (p) => ipcRenderer.invoke(IPC_CHANNELS.settingsSet, p)
     },
     shell: {
-      openExternal: (url: string, opts?: { confirmed?: boolean }) =>
-        ipcRenderer.invoke(IPC_CHANNELS.shellOpenExternal, {
-          url,
-          confirmed: opts?.confirmed
-        })
+      openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.shellOpenExternal, { url })
     },
     diagnostics: {
       get: () => ipcRenderer.invoke(IPC_CHANNELS.diagnosticsGet)
+    },
+    window: {
+      setDialogOverlay: (open) => ipcRenderer.invoke(IPC_CHANNELS.windowSetDialogOverlay, open)
     }
   }
 }

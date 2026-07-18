@@ -12,31 +12,21 @@ export const DEFAULT_PRICEAI_UA = ''
 export const LEGACY_IDENTIFIABLE_PRICEAI_UA =
   'MerchantAggregator/1.0 (+personal-research; contact: local-user)'
 
-export const DEFAULT_ALLOWLIST_HOSTS = [
-  'priceai.cc',
-  'www.priceai.cc',
-  'pay.ldxp.cn',
-  'ldxp.cn',
-  'www.ldxp.cn',
-  'qn.ldxp.cn',
-  'catfk.com',
-  'www.catfk.com'
-] as const
-
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   networkPaused: false,
   priceaiUa: DEFAULT_PRICEAI_UA,
   requestIntervalMs: 500,
   shopFreshHours: 24,
   shopMinIntervalMs: 500,
+  /** ShopAPI 单店分页并发页数 */
+  shopPageConcurrency: 3,
   shopScrapeEnabled: true,
   /** @deprecated dual-fill with shopMinIntervalMs */
   ldxpMinIntervalMs: 500,
   /** @deprecated dual-fill with shopScrapeEnabled */
   ldxpScrapeEnabled: true,
-  openExternalMode: 'allowlist_confirm',
-  allowlistHosts: [...DEFAULT_ALLOWLIST_HOSTS],
   notifyOnJobFinished: false,
+  theme: 'system',
   recentSearches: [],
   searchExcludeWords: [],
   savedSearches: [] as SavedSearch[]
@@ -61,17 +51,19 @@ export const SEARCH_DEFAULTS = {
   hidePriceAtOrAbove: 5000
 } as const
 
-/** Page size for shopApi-family goodsList (all shopApi profiles). */
+/** Page size / concurrency for shopApi-family goodsList. */
 export const SHOP_API_LIMITS = {
   defaultPageSize: 20,
-  maxPageSize: 50
+  maxPageSize: 50,
+  /** Concurrent goodsList pages per goods type */
+  pageConcurrency: { min: 1, max: 10, default: 3 }
 } as const
 
 /** 一键初始化时深刮的店铺数(按报价数排序取前 N) */
 export const BOOTSTRAP_TOP_N = 50
 
 /** SQLite schema user_version for migrations. */
-export const DB_SCHEMA_VERSION = 6
+export const DB_SCHEMA_VERSION = 10
 
 /** Cap for settings.recentSearches */
 export const RECENT_SEARCHES_MAX = 12

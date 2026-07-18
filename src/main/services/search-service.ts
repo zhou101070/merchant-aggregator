@@ -15,8 +15,6 @@ import type {
   SearchQuery,
   SearchResult
 } from '@shared/types/search'
-import type { CompareRequest, CompareResult } from '@shared/types/product'
-import { nameNorm } from '@shared/lib/name-norm'
 import {
   compareRelevance,
   computeIdfFromRows,
@@ -25,7 +23,13 @@ import {
   scoreShopRank,
   type RankContext
 } from '@shared/lib/search-rank'
-import { likeContains, tokenizeQuery } from '@shared/lib/search-query'
+import {
+  isDurationToken,
+  isVersionTailToken,
+  likeContains,
+  likeTokenBoundary,
+  tokenizeQuery
+} from '@shared/lib/search-query'
 
 interface ShopSearchRow {
   id: string
@@ -105,8 +109,9 @@ export class SearchService {
     let { where, params } = this.buildWhere(req, q, tokenGroups)
     let whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
 
-    // Soft fallback: multi-token AND empty → OR match (recall)
-    if (q && tokenGroups.length >= 2) {
+    // Soft fallback: multi-token AND empty → OR match (recall).
+    // Skip when query has duration tokens (7天): OR would flood with product-only hits.
+    if (q && tokenGroups.length >= 2 && !tokens.some(isDurationToken)) {
       const andTotal = this.countWhere(whereSql, params)
       if (andTotal === 0) {
         const or = this.buildTokenOrWhere(tokenGroups)
@@ -163,45 +168,6 @@ export class SearchService {
     return { hits: hits.slice(offset, offset + limit), total, facets }
   }
 
-  compare(req: CompareRequest): CompareResult {
-    const seed = nameNorm(req.titleNorm ?? '')
-    const tokens = tokenizeQuery(seed)
-    // Product-family probe: first 2 tokens (e.g. "claude pro") so 月卡/季卡 variants both surface.
-    // Full-title AND would over-narrow and hide sibling SKUs across shops.
-    const q =
-      tokens.length >= 2 ? tokens.slice(0, 2).join(' ') : tokens[0] || (req.titleNorm ?? '').trim()
-
-    const result = this.query({
-      q,
-      kinds: ['shop_product'],
-      sort: 'price',
-      sortDir: 'asc',
-      limit: 300,
-      offset: 0
-    })
-
-    const minHits = tokens.length <= 1 ? 1 : Math.min(2, tokens.length)
-    const rows = result.hits
-      .filter((h) => {
-        const ht = nameNorm(h.title)
-        if (!seed) return true
-        if (ht === seed) return true
-        if (seed.length >= 6 && (ht.includes(seed) || seed.includes(ht))) return true
-        const hitCount = tokens.filter((t) => ht.includes(t)).length
-        return hitCount >= minHits || (tokens.length > 0 && hitCount / tokens.length >= 0.5)
-      })
-      .slice(0, 100)
-
-    return {
-      mode: 'weak_title',
-      product: null,
-      rows,
-      tokens,
-      notice:
-        '弱比价：按标题关键词聚合，非标准 SKU。同名规格/时长可能仍混在一起，请对照完整标题后再下单。'
-    }
-  }
-
   /**
    * Token AND: every synonym-group must hit title/shop/merchant/category/type
    * (OR within a group). Falls back to full-string LIKE when no tokens.
@@ -221,7 +187,7 @@ export class SearchService {
         Object.assign(params, tp)
       } else {
         where.push(
-          `(s.title LIKE @q ESCAPE '\\' OR s.shop_name LIKE @q ESCAPE '\\' OR m.name LIKE @q ESCAPE '\\' OR s.category_name LIKE @q ESCAPE '\\')`
+          `(${this.titleMatchClause('q')} OR s.shop_name LIKE @q ESCAPE '\\' OR m.name LIKE @q ESCAPE '\\' OR s.category_name LIKE @q ESCAPE '\\')`
         )
         params.q = likeContains(q)
       }
@@ -231,8 +197,48 @@ export class SearchService {
     return { where, params }
   }
 
+  /** Prefer precomputed title_norm/tokens; fall back to raw title for legacy rows. */
+  private titleMatchClause(paramKey: string): string {
+    return `(COALESCE(s.title_norm, s.title) LIKE @${paramKey} ESCAPE '\\' OR COALESCE(s.title_tokens, '') LIKE @${paramKey} ESCAPE '\\' OR s.title LIKE @${paramKey} ESCAPE '\\')`
+  }
+
   private fieldMatchClause(paramKey: string): string {
-    return `(s.title LIKE @${paramKey} ESCAPE '\\' OR s.shop_name LIKE @${paramKey} ESCAPE '\\' OR m.name LIKE @${paramKey} ESCAPE '\\' OR s.category_name LIKE @${paramKey} ESCAPE '\\' OR s.goods_type LIKE @${paramKey} ESCAPE '\\')`
+    return `(${this.titleMatchClause(paramKey)} OR s.shop_name LIKE @${paramKey} ESCAPE '\\' OR m.name LIKE @${paramKey} ESCAPE '\\' OR s.category_name LIKE @${paramKey} ESCAPE '\\' OR s.goods_type LIKE @${paramKey} ESCAPE '\\')`
+  }
+
+  /**
+   * Version tails (7 / 4o / 3.5): title only + whole-token on title_tokens.
+   * Avoids shop ids like "7878" matching query "grok7" via LIKE '%7%'.
+   */
+  private versionTitleMatchClause(paramKey: string): string {
+    return `(
+      (' ' || COALESCE(s.title_tokens, '') || ' ') LIKE @${paramKey} ESCAPE '\\'
+      OR (
+        (s.title_tokens IS NULL OR s.title_tokens = '')
+        AND (
+          COALESCE(s.title_norm, s.title) LIKE @${paramKey}_sub ESCAPE '\\'
+          OR s.title LIKE @${paramKey}_sub ESCAPE '\\'
+        )
+      )
+    )`
+  }
+
+  private bindTokenMatch(
+    group: string[],
+    keyPrefix: string,
+    params: Record<string, unknown>
+  ): string[] {
+    const versionOnly = group.length > 0 && group.every((v) => isVersionTailToken(v))
+    return group.map((v, j) => {
+      const key = `${keyPrefix}_${j}`
+      if (versionOnly) {
+        params[key] = likeTokenBoundary(v)
+        params[`${key}_sub`] = likeContains(v)
+        return this.versionTitleMatchClause(key)
+      }
+      params[key] = likeContains(v)
+      return this.fieldMatchClause(key)
+    })
   }
 
   private buildTokenAndWhere(tokenGroups: string[][]): {
@@ -242,11 +248,7 @@ export class SearchService {
     const where: string[] = []
     const params: Record<string, unknown> = {}
     tokenGroups.forEach((group, i) => {
-      const ors = group.map((v, j) => {
-        const key = `tok${i}_${j}`
-        params[key] = likeContains(v)
-        return this.fieldMatchClause(key)
-      })
+      const ors = this.bindTokenMatch(group, `tok${i}`, params)
       where.push(`(${ors.join(' OR ')})`)
     })
     return { where, params }
@@ -259,11 +261,7 @@ export class SearchService {
     const params: Record<string, unknown> = {}
     const clauses: string[] = []
     tokenGroups.forEach((group, i) => {
-      const ors = group.map((v, j) => {
-        const key = `otok${i}_${j}`
-        params[key] = likeContains(v)
-        return this.fieldMatchClause(key)
-      })
+      const ors = this.bindTokenMatch(group, `otok${i}`, params)
       clauses.push(`(${ors.join(' OR ')})`)
     })
     return {
@@ -279,7 +277,7 @@ export class SearchService {
     )
     params.hidePriceAtOrBelow = SEARCH_DEFAULTS.hidePriceAtOrBelow
     params.hidePriceAtOrAbove = SEARCH_DEFAULTS.hidePriceAtOrAbove
-    // 本机黑名单：商品 id / 商家 id（搜索与比价共用 query 路径）
+    // 本机黑名单：商品 id / 商家 id
     where.push(
       `NOT EXISTS (
          SELECT 1 FROM blocked_targets b
@@ -287,9 +285,8 @@ export class SearchService {
             OR (b.target_type = 'merchant' AND b.target_id = s.merchant_id)
        )`
     )
-    if (req.inStockOnly) {
-      where.push(`(s.stock IS NOT NULL AND s.stock > 0)`)
-    }
+    // 搜索只展示可买库存；售罄/无库存不进结果
+    where.push(`(s.stock IS NOT NULL AND s.stock > 0)`)
     if (req.priceMin != null) {
       where.push(`s.price >= @priceMin`)
       params.priceMin = req.priceMin
@@ -310,12 +307,13 @@ export class SearchService {
         const term = t.trim()
         if (!term) return
         params[`tc${i}`] = likeContains(term)
-        where.push(`s.title LIKE @tc${i} ESCAPE '\\'`)
+        where.push(this.titleMatchClause(`tc${i}`))
         negPrefixes.forEach((p, j) => {
           const glued = `tcn${i}_${j}`
           const spaced = `tcns${i}_${j}`
           params[glued] = likeContains(`${p}${term}`)
           params[spaced] = likeContains(`${p} ${term}`)
+          // Negation checks raw title so 「非PLUS」 phrases stay reliable
           where.push(`s.title NOT LIKE @${glued} ESCAPE '\\'`)
           where.push(`s.title NOT LIKE @${spaced} ESCAPE '\\'`)
         })
@@ -326,7 +324,9 @@ export class SearchService {
         const term = t.trim()
         if (!term) return
         params[`tex${i}`] = likeContains(term)
-        where.push(`s.title NOT LIKE @tex${i} ESCAPE '\\'`)
+        where.push(
+          `NOT (${this.titleMatchClause(`tex${i}`)})`
+        )
       })
     }
   }

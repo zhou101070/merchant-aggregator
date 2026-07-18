@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3'
 import { DB_SCHEMA_VERSION } from '@shared/constants'
+import { productTitleSearchFields } from '@shared/lib/search-query'
 import { createLogger } from '../utils/logger'
-import { SCHEMA_V1_SQL, SCHEMA_V2_SQL, SCHEMA_V6_SQL } from './schema.sql'
+import { SCHEMA_V1_SQL, SCHEMA_V2_SQL, SCHEMA_V6_SQL, SCHEMA_V7_SQL } from './schema.sql'
 
 const log = createLogger('db:migrate')
 
@@ -123,6 +124,97 @@ export function migrate(db: Database.Database): { from: number; to: number } {
     db.exec(SCHEMA_V6_SQL)
     recordMigration(db, 6)
     version = 6
+  }
+
+  if (version < 7) {
+    log.info('applying schema v7 (shop_products title_norm / title_tokens)')
+    addColumnIfMissing(db, 'shop_products', 'title_norm', 'TEXT')
+    addColumnIfMissing(db, 'shop_products', 'title_tokens', 'TEXT')
+    const pending = db
+      .prepare(
+        `SELECT id, title FROM shop_products
+         WHERE title_norm IS NULL OR title_norm = '' OR title_tokens IS NULL`
+      )
+      .all() as { id: string; title: string }[]
+    if (pending.length) {
+      const upd = db.prepare(
+        `UPDATE shop_products SET title_norm = ?, title_tokens = ? WHERE id = ?`
+      )
+      const tx = db.transaction((rows: { id: string; title: string }[]) => {
+        for (const r of rows) {
+          const f = productTitleSearchFields(r.title ?? '')
+          upd.run(f.titleNorm, f.titleTokens, r.id)
+        }
+      })
+      tx(pending)
+    }
+    db.exec(SCHEMA_V7_SQL)
+    recordMigration(db, 7)
+    version = 7
+  }
+
+  if (version < 8) {
+    log.info('applying schema v8 (backfill dujiao shop_platform / shop_token from collector_kind)')
+    // Host-as-token: enable list filter + scrapable queue without full PriceAI re-sync.
+    db.exec(`
+      UPDATE merchants
+      SET shop_platform = 'dujiao',
+          shop_token = lower(trim(host))
+      WHERE collector_kind = 'dujiao'
+        AND host IS NOT NULL AND trim(host) != ''
+        AND (shop_platform IS NULL OR shop_platform = '')
+        AND (shop_token IS NULL OR shop_token = '')
+    `)
+    recordMigration(db, 8)
+    version = 8
+  }
+
+  if (version < 9) {
+    log.info(
+      'applying schema v9 (backfill yiciyuan shop_platform / shop_token from collector_kind kami)'
+    )
+    // Host-as-token: kami/yiciyuan → platform=yiciyuan, token=hostname
+    db.exec(`
+      UPDATE merchants
+      SET shop_platform = 'yiciyuan',
+          shop_token = CASE
+            WHEN shop_token IS NOT NULL AND trim(shop_token) != '' THEN lower(trim(shop_token))
+            ELSE lower(trim(host))
+          END
+      WHERE collector_kind IN ('kami', 'yiciyuan')
+        AND host IS NOT NULL AND trim(host) != ''
+        AND (shop_platform IS NULL OR shop_platform = '' OR shop_platform = 'kami')
+    `)
+    db.exec(`
+      UPDATE merchants
+      SET shop_platform = 'yiciyuan'
+      WHERE shop_platform = 'kami'
+    `)
+    recordMigration(db, 9)
+    version = 9
+  }
+
+  if (version < 10) {
+    log.info(
+      'applying schema v10 (revoke unconfirmed yiciyuan refs from soft kami backfill)'
+    )
+    // v9 mass-backfilled kami → yiciyuan without live fingerprint. Keep only shops that
+    // already ran a scrape attempt (healthy/failing/retrying); never-confirmed → clear.
+    db.exec(`
+      UPDATE merchants
+      SET shop_platform = NULL,
+          shop_token = NULL,
+          app_health_message = COALESCE(app_health_message, '已撤销未确认的异次元标记，等待指纹探测')
+      WHERE shop_platform IN ('yiciyuan', 'kami')
+        AND collector_kind IN ('kami', 'yiciyuan')
+        AND (
+          app_health_status IS NULL
+          OR app_health_status = ''
+          OR app_health_status = 'never'
+        )
+    `)
+    recordMigration(db, 10)
+    version = 10
   }
 
   if (version !== from) {

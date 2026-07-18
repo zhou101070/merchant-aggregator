@@ -1,4 +1,7 @@
-/** Shop platform family. Extend when non-shopApi adapters land. */
+/**
+ * Scrapable profile family (registered in SHOP_PROFILES).
+ * Broader taxonomy (dujiao/yiciyuan/…) lives in identify.ts ShopFamilyId.
+ */
 export type ShopFamily = 'shopapi'
 
 export interface ShopApiEndpoints {

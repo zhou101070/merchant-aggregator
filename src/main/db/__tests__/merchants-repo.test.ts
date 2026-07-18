@@ -8,6 +8,8 @@ function insertMerchant(
   row: {
     id: string
     name: string
+    host?: string | null
+    collectorKind?: string | null
     ldxpToken?: string | null
     shopPlatform?: string | null
     shopToken?: string | null
@@ -19,15 +21,18 @@ function insertMerchant(
   }
 ): void {
   const token = row.shopToken ?? row.ldxpToken ?? null
-  const platform = row.shopPlatform ?? (token ? 'ldxp' : null)
+  const platform =
+    row.shopPlatform !== undefined ? row.shopPlatform : token ? 'ldxp' : null
   db.prepare(
     `INSERT INTO merchants (
-       id, name, fetched_at, ldxp_token, shop_platform, shop_token, offer_count,
+       id, name, host, collector_kind, fetched_at, ldxp_token, shop_platform, shop_token, offer_count,
        app_health_status, app_health_at, platforms_json, representative_product
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     row.id,
     row.name,
+    row.host ?? null,
+    row.collectorKind ?? null,
     new Date().toISOString(),
     platform === 'ldxp' ? token : (row.ldxpToken ?? null),
     platform,
@@ -182,6 +187,40 @@ describe('MerchantsRepo list shopPlatforms', () => {
 
       const catfk = repo.list({ shopPlatforms: ['catfk'], offset: 0, limit: 50 })
       expect(catfk.rows.map((r) => r.id)).toEqual(['c1'])
+
+      insertMerchant(db, {
+        id: 'd1',
+        name: '独角店-仅collector',
+        host: 'flyai.qzz.io',
+        collectorKind: 'dujiao'
+      })
+      insertMerchant(db, {
+        id: 'd2',
+        name: '独角店-已回填',
+        host: 'morimm.com',
+        shopPlatform: 'dujiao',
+        shopToken: 'morimm.com',
+        collectorKind: 'dujiao'
+      })
+      const dujiao = repo.list({ shopPlatforms: ['dujiao'], offset: 0, limit: 50 })
+      expect(dujiao.rows.map((r) => r.id).sort()).toEqual(['d1', 'd2'])
+
+      insertMerchant(db, {
+        id: 'y1',
+        name: '异次元-仅collector',
+        host: 'web3chirou.com',
+        collectorKind: 'kami'
+      })
+      insertMerchant(db, {
+        id: 'y2',
+        name: '异次元-已回填',
+        host: 'ai666.id',
+        shopPlatform: 'yiciyuan',
+        shopToken: 'ai666.id',
+        collectorKind: 'kami'
+      })
+      const yiciyuan = repo.list({ shopPlatforms: ['yiciyuan'], offset: 0, limit: 50 })
+      expect(yiciyuan.rows.map((r) => r.id).sort()).toEqual(['y1', 'y2'])
 
       const both = repo.list({ shopPlatforms: ['ldxp', 'catfk'], offset: 0, limit: 50 })
       expect(both.rows.map((r) => r.id).sort()).toEqual(['c1', 'l1'])

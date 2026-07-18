@@ -34,12 +34,14 @@ export function useSyncStatus(): {
     void refresh()
     const off = window.api.sync.onProgress((e) => {
       setProgress(e)
-      if (
+      const terminal =
         e.status === 'succeeded' ||
         e.status === 'failed' ||
         e.status === 'cancelled' ||
         e.status === 'partial'
-      ) {
+      // phase=shop fires at each shop start/end (not mid-product); keep counts fresh for list UIs
+      const shopBoundary = e.status === 'running' && e.phase === 'shop'
+      if (terminal || shopBoundary) {
         void refresh()
       }
     })

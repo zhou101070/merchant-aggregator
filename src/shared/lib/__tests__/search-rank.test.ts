@@ -24,11 +24,29 @@ function ctx(q: string, idfEntries: Array<[string, number]> = []): Parameters<ty
 
 describe('search-rank', () => {
   it('expands product synonyms', () => {
-    expect(synonymGroup('gpt4')).toEqual(expect.arrayContaining(['gpt4', 'chatgpt', 'gpt-4']))
+    expect(synonymGroup('gpt4')).toEqual(expect.arrayContaining(['gpt4', 'chatgpt', 'gpt-4', 'gpt 4']))
     expect(synonymGroup('月卡')).toEqual(expect.arrayContaining(['月卡', 'monthly']))
     // bare '+' must not alias plus (would match any title containing +)
     expect(synonymGroup('plus')).toEqual(['plus'])
     expect(synonymGroup('plus')).not.toContain('+')
+  })
+
+  it('alnum surface forms cover glued / spaced / hyphen versions', () => {
+    expect(synonymGroup('grok7')).toEqual(expect.arrayContaining(['grok7', 'grok 7', 'grok-7']))
+    expect(tokenizeQuery('grok 7')).toEqual(tokenizeQuery('grok7'))
+  })
+
+  it('ordered non-adjacent version match: grok … 7 in title', () => {
+    const tokens = tokenizeQuery('grok 7')
+    const groups = expandTokenGroups(tokens)
+    expect(groups).toHaveLength(2)
+    expect(inQueryOrder('grok super long filler then 7 day', groups)).toBe(true)
+    expect(inQueryOrder('7 day then grok', groups)).toBe(false)
+    // gpt4 still collapses to product synonyms (one group)
+    expect(expandTokenGroups(tokenizeQuery('gpt4')).length).toBe(1)
+    expect(expandTokenGroups(tokenizeQuery('gpt4'))[0]).toEqual(
+      expect.arrayContaining(['chatgpt', 'gpt4'])
+    )
   })
 
   it('prefers full title coverage over shop-name only hits', () => {

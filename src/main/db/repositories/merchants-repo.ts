@@ -1,9 +1,6 @@
 import type Database from 'better-sqlite3'
 import { likeContains, tokenizeQuery } from '@shared/lib/search-query'
-import {
-  knownShopPlatformIds,
-  SHOP_PLATFORM_OTHER
-} from '@shared/platforms/shop-profiles'
+import { knownShopPlatformIds, SHOP_PLATFORM_OTHER } from '@shared/platforms/shop-profiles'
 import type { Merchant, MerchantCandidates, MerchantListQuery } from '@shared/types/merchant'
 import type { NormalizedMerchantRow } from '../../platforms/priceai/normalize'
 
@@ -220,7 +217,7 @@ export class MerchantsRepo {
 
   setAppHealth(
     merchantId: string,
-    status: 'healthy' | 'failing' | 'retrying',
+    status: 'healthy' | 'failing' | 'retrying' | 'never',
     message?: string | null
   ): void {
     this.db
@@ -235,7 +232,7 @@ export class MerchantsRepo {
   setAppHealthByShopRef(
     platform: string,
     token: string,
-    status: 'healthy' | 'failing' | 'retrying',
+    status: 'healthy' | 'failing' | 'retrying' | 'never',
     message?: string | null
   ): void {
     this.db
@@ -245,6 +242,60 @@ export class MerchantsRepo {
          WHERE shop_platform = ? AND shop_token = ?`
       )
       .run(status, new Date().toISOString(), message ?? null, platform, token)
+  }
+
+  /** Write confirmed host-token shop ref after fingerprint probe. */
+  setShopRef(merchantId: string, platform: string, token: string): void {
+    this.db
+      .prepare(
+        `UPDATE merchants
+         SET shop_platform = ?, shop_token = ?
+         WHERE id = ?`
+      )
+      .run(platform, token, merchantId)
+  }
+
+  /**
+   * Drop scrapable ref when live fingerprint proves wrong family
+   * (keeps collector_kind for UI soft label).
+   */
+  clearShopRef(merchantId: string): void {
+    this.db
+      .prepare(
+        `UPDATE merchants
+         SET shop_platform = NULL, shop_token = NULL,
+             app_health_status = 'never',
+             app_health_at = ?,
+             app_health_message = ?
+         WHERE id = ?`
+      )
+      .run(new Date().toISOString(), '指纹不符，已取消平台标记', merchantId)
+  }
+
+  /** kami/yiciyuan candidates without confirmed scrapable ref — for live probe. */
+  listYiciyuanProbeCandidates(limit = 40): {
+    id: string
+    host: string
+    shopUrl: string | null
+    entryUrl: string | null
+  }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, host, shop_url AS shopUrl, entry_url AS entryUrl
+         FROM merchants
+         WHERE collector_kind IN ('kami', 'yiciyuan')
+           AND host IS NOT NULL AND trim(host) != ''
+           AND (shop_platform IS NULL OR shop_platform = '' OR shop_platform = 'kami')
+         ORDER BY offer_count DESC
+         LIMIT ?`
+      )
+      .all(Math.max(1, Math.min(limit, 100))) as {
+      id: string
+      host: string
+      shopUrl: string | null
+      entryUrl: string | null
+    }[]
+    return rows
   }
 
   findByShopRef(platform: string, token: string): Merchant | null {
@@ -405,9 +456,7 @@ export class MerchantsRepo {
     const idSub = `SELECT id FROM merchants WHERE ${noLink}`
     const run = this.db.transaction(() => {
       this.db
-        .prepare(
-          `DELETE FROM favorites WHERE target_type = 'merchant' AND target_id IN (${idSub})`
-        )
+        .prepare(`DELETE FROM favorites WHERE target_type = 'merchant' AND target_id IN (${idSub})`)
         .run()
       this.db
         .prepare(
@@ -468,7 +517,19 @@ export class MerchantsRepo {
           params[key] = p
           return `@${key}`
         })
-        parts.push(`shop_platform IN (${keys.join(',')})`)
+        // shop_platform primary; host-token families also match PriceAI collector_kind before backfill
+        const collectorOr: string[] = []
+        if (explicit.includes('dujiao')) {
+          collectorOr.push(`collector_kind = 'dujiao'`)
+        }
+        if (explicit.includes('yiciyuan')) {
+          collectorOr.push(`collector_kind IN ('kami', 'yiciyuan')`)
+        }
+        if (collectorOr.length) {
+          parts.push(`(shop_platform IN (${keys.join(',')}) OR ${collectorOr.join(' OR ')})`)
+        } else {
+          parts.push(`shop_platform IN (${keys.join(',')})`)
+        }
       }
       if (wantOther) {
         // Align with mapRow dual-fill: ldxp_token without shop_platform counts as ldxp, not other.
@@ -489,7 +550,9 @@ export class MerchantsRepo {
             )`
           )
         } else {
-          parts.push(`(shop_platform IS NULL OR shop_platform = '') AND (ldxp_token IS NULL OR ldxp_token = '')`)
+          parts.push(
+            `(shop_platform IS NULL OR shop_platform = '') AND (ldxp_token IS NULL OR ldxp_token = '')`
+          )
         }
       }
       if (parts.length) where.push(`(${parts.join(' OR ')})`)

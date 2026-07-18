@@ -1,7 +1,12 @@
 import type { BlockedTarget, BlockTargetType } from './blocklist'
 import type { Favorite, FavoriteTargetType, FavoriteUpdateRequest, RecentView } from './favorites'
 import type { Merchant, MerchantCandidates, MerchantListQuery } from './merchant'
-import type { CompareRequest, CompareResult, ShopProduct, ShopProductListQuery } from './product'
+import type {
+  RefreshStockRequest,
+  RefreshStockResult,
+  ShopProduct,
+  ShopProductListQuery
+} from './product'
 import type { SearchQuery, SearchResult } from './search'
 import type { AppSettings } from './settings'
 import type {
@@ -17,7 +22,7 @@ export const IPC_CHANNELS = {
   merchantsGet: 'merchants:get',
   merchantsCandidates: 'merchants:candidates',
   shopProductsList: 'shopProducts:list',
-  productsCompare: 'products:compare',
+  productsRefreshStock: 'products:refreshStock',
   searchQuery: 'search:query',
   syncStart: 'sync:start',
   syncCancel: 'sync:cancel',
@@ -39,7 +44,9 @@ export const IPC_CHANNELS = {
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   shellOpenExternal: 'shell:openExternal',
-  diagnosticsGet: 'diagnostics:get'
+  diagnosticsGet: 'diagnostics:get',
+  /** Win: 弹窗打开时调暗 titleBarOverlay,模拟蒙层盖住窗控区 */
+  windowSetDialogOverlay: 'window:setDialogOverlay'
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
@@ -55,7 +62,7 @@ export interface RendererApi {
     list: (q: ShopProductListQuery) => Promise<{ rows: ShopProduct[]; total: number }>
   }
   products: {
-    compare: (req: CompareRequest) => Promise<CompareResult>
+    refreshStock: (req: RefreshStockRequest) => Promise<RefreshStockResult>
   }
   search: {
     query: (req: SearchQuery) => Promise<SearchResult>
@@ -103,12 +110,12 @@ export interface RendererApi {
     set: (p: Partial<AppSettings>) => Promise<AppSettings>
   }
   shell: {
-    openExternal: (
-      url: string,
-      opts?: { confirmed?: boolean }
-    ) => Promise<{ ok: boolean; needsConfirm?: boolean; host?: string }>
+    openExternal: (url: string) => Promise<{ ok: boolean }>
   }
   diagnostics: {
     get: () => Promise<Record<string, unknown>>
+  }
+  window: {
+    setDialogOverlay: (open: boolean) => Promise<void>
   }
 }

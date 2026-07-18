@@ -180,7 +180,7 @@ ALTER TABLE merchants ADD COLUMN app_health_at TEXT;
 ALTER TABLE merchants ADD COLUMN app_health_message TEXT;
 `
 
-/** Schema version 6 — local blocklist for search/compare. */
+/** Schema version 6 — local blocklist for search. */
 export const SCHEMA_V6_SQL = `
 CREATE TABLE IF NOT EXISTS blocked_targets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,6 +191,11 @@ CREATE TABLE IF NOT EXISTS blocked_targets (
   UNIQUE (target_type, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_blocked_targets_type ON blocked_targets(target_type);
+`
+
+/** Schema version 7 — product title search index fields (norm + tokens). */
+export const SCHEMA_V7_SQL = `
+CREATE INDEX IF NOT EXISTS idx_shop_products_title_norm ON shop_products(title_norm);
 `
 
 export const REQUIRED_TABLES = [

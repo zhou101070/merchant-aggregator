@@ -5,16 +5,19 @@ import { IPC_CHANNELS } from '@shared/types/ipc'
 import type { BlockTargetType } from '@shared/types/blocklist'
 import type { FavoriteTargetType, FavoriteUpdateRequest } from '@shared/types/favorites'
 import type { MerchantListQuery } from '@shared/types/merchant'
-import type { CompareRequest, ShopProductListQuery } from '@shared/types/product'
+import type { RefreshStockRequest, ShopProductListQuery } from '@shared/types/product'
 import type { SearchQuery } from '@shared/types/search'
 import type { AppSettings } from '@shared/types/settings'
 import type { SyncJobListQuery, SyncStartRequest } from '@shared/types/sync'
 import type { Repositories } from '../db/repositories'
 import type { SyncOrchestrator } from '../services/sync-orchestrator'
 import type { SearchService } from '../services/search-service'
+import { ProductStockService } from '../services/product-stock-service'
 import { createLogger } from '../utils/logger'
 import { evaluateOpenExternal } from '../utils/url-safety'
 import { resolveUserDataDbPath } from '../db/connection'
+import { applyThemeSource } from '../theme'
+import { setDialogOverlayActive } from '../window-chrome'
 
 const log = createLogger('ipc')
 
@@ -40,6 +43,8 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     }
   }
 
+  const productStock = new ProductStockService(ctx.repos)
+
   ipcMain.handle(IPC_CHANNELS.merchantsList, async (_e, query: MerchantListQuery) =>
     ctx.repos.merchants.list(query)
   )
@@ -55,9 +60,15 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     ctx.repos.shopProducts.list(query)
   )
 
-  ipcMain.handle(IPC_CHANNELS.productsCompare, async (_e, req: CompareRequest) =>
-    ctx.search.compare(req)
-  )
+  ipcMain.handle(IPC_CHANNELS.productsRefreshStock, async (_e, req: RefreshStockRequest) => {
+    try {
+      return await productStock.refresh(req)
+    } catch (err) {
+      const e = toIpcError(err)
+      log.warn('products:refreshStock failed', e)
+      throw new Error(`${e.code}: ${e.message}`)
+    }
+  })
 
   ipcMain.handle(IPC_CHANNELS.searchQuery, async (_e, req: SearchQuery) => ctx.search.query(req))
 
@@ -131,25 +142,22 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC_CHANNELS.blocklistClear, async () => ctx.repos.blocklist.clear())
 
   ipcMain.handle(IPC_CHANNELS.settingsGet, async () => ctx.repos.settings.get())
-  ipcMain.handle(IPC_CHANNELS.settingsSet, async (_e, partial: Partial<AppSettings>) =>
-    ctx.repos.settings.set(partial)
-  )
-
-  ipcMain.handle(
-    IPC_CHANNELS.shellOpenExternal,
-    async (_e, req: { url: string; confirmed?: boolean }) => {
-      const settings = ctx.repos.settings.get()
-      const decision = evaluateOpenExternal(req.url, settings)
-      if (decision.action === 'reject') {
-        throw new AppError('INVALID_URL', decision.reason)
-      }
-      if (decision.action === 'confirm' && !req.confirmed) {
-        return { ok: false, needsConfirm: true, host: decision.host }
-      }
-      await shell.openExternal(req.url)
-      return { ok: true }
+  ipcMain.handle(IPC_CHANNELS.settingsSet, async (_e, partial: Partial<AppSettings>) => {
+    const next = ctx.repos.settings.set(partial)
+    if (partial.theme !== undefined) {
+      applyThemeSource(next.theme)
     }
-  )
+    return next
+  })
+
+  ipcMain.handle(IPC_CHANNELS.shellOpenExternal, async (_e, req: { url: string }) => {
+    const decision = evaluateOpenExternal(req.url)
+    if (decision.action === 'reject') {
+      throw new AppError('INVALID_URL', decision.reason)
+    }
+    await shell.openExternal(req.url)
+    return { ok: true }
+  })
 
   ipcMain.handle(IPC_CHANNELS.diagnosticsGet, async () => {
     const status = ctx.sync.getStatus()
@@ -162,5 +170,9 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       networkPaused: ctx.repos.settings.get().networkPaused,
       priceSource: 'ldxp_shop_products'
     }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.windowSetDialogOverlay, async (_e, open: boolean) => {
+    setDialogOverlayActive(Boolean(open))
   })
 }

@@ -3,7 +3,7 @@
 | 字段     | 值                                                                      |
 | -------- | ----------------------------------------------------------------------- |
 | 版本     | 1.0(2026-07-17)                                                         |
-| 状态     | 已确认方向:双主题跟随系统 · 搜索即首页 · 石墨+黄铜 · macOS 无边框标题栏 |
+| 状态     | 已确认方向:双主题默认跟系统可手动 · 搜索即首页 · 石墨+黄铜 · macOS 无边框标题栏 |
 | register | product(工具型 UI)                                                      |
 | 适用范围 | `src/renderer/**` 全部界面,`src/main/index.ts` 窗口配置                 |
 
@@ -28,7 +28,7 @@
 
 ## 2. 主题架构
 
-- 双主题,**跟随系统**,无手动开关。实现:`:root { color-scheme: light dark }` + 全令牌 `light-dark()` 函数(Chromium 123+,Electron 39 原生支持)。
+- 双主题。设置项 `theme`:`system`(默认)/`light`/`dark`。实现:`:root { color-scheme: light dark }` + 全令牌 `light-dark()`;主进程 `nativeTheme.themeSource` 同步设置值(截图钩子 `MA_THEME` 优先)。
 - 主进程窗口 `backgroundColor`(及 Windows `titleBarOverlay`)依 `nativeTheme.shouldUseDarkColors` 设定并监听 `updated` 事件,避免主题切换/启动白闪,标题栏与内容同色(见 §8.3)。
 - 组件与页面样式**只允许引用语义令牌**,禁止裸色值;两主题共享同一套语义角色。
 
@@ -179,7 +179,7 @@
 
 ### 9.1 搜索(首页)
 
-- 头部:40px 大输入框(左 search 图标,右 ⌘K Kbd),宽 ≤720px;右侧排序 Segmented(相关度/价格↑)+ 仅有货 Chip + CSV 导出 IconButton。
+- 头部:40px 大输入框(左 search 图标,右 ⌘K Kbd),宽 ≤720px;右侧价格区间 + 保存当前 + CSV 导出。排序默认相关度，价格/库存等走表头；非相关度时顶栏出现「相关度」ghost 按钮可一键恢复。
 - 过滤行:规格 chips(质保/直登/成品/Pro/Plus/邮箱/Claude/GPT)+ 命中后店铺 facet chips(计数用等宽)。
 - **起始态**(有数据、无查询):「从上次继续」最近浏览 6–8 条(单行列表:标题 + 类型 + 相对时间,点击=按标题重搜/进商家)+ 规格 chips。教用户从哪开始,不留白屏。
 - **冷启动空态**(无商家/无商品):EmptyState 分阶段——`need_merchants`:一键初始化(primary)+ 只同步商家(default);`need_products`:同步 Top 50(primary)+ 全量 ldxp + 去商家列表。承接原首页职责。
@@ -209,7 +209,7 @@
 
 ### 9.5 设置
 
-- max-width 560;三个分组面板:**同步**(暂停所有网络同步 Switch / 允许 ldxp 深刮 Switch / PriceAI 间隔 / ldxp 最小间隔 / 新鲜期小时,数字输入右缀单位)· **外链**(模式 Select + 各选项一行说明)· **数据与诊断**(诊断 JSON 折叠 `<details>`,等宽 11px)。
+- max-width 560;分组面板:**外观**(主题 Select:跟随系统/浅色/深色)· **同步**(暂停所有网络同步 Switch / 允许 ldxp 深刮 Switch / PriceAI 间隔 / ldxp 最小间隔 / 新鲜期小时,数字输入右缀单位)· **外链**(模式 Select + 各选项一行说明)· **屏蔽名单**· **数据与诊断**(诊断 JSON 折叠 `<details>`,等宽 11px)。
 - 每项:label text-m + 说明 text-s/`--ink-2`;保存回执 Toast「已保存」。
 
 ## 10. 无障碍与质量门槛(发布前逐项过)

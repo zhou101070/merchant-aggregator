@@ -32,6 +32,7 @@ export interface SearchHit {
 export interface SearchQuery {
   q: string
   kinds?: SearchHitKind[]
+  /** @deprecated always filtered server-side; kept for saved-search compat */
   inStockOnly?: boolean
   priceMin?: number
   priceMax?: number

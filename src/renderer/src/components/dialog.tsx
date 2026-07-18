@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type PropsWithChildren } from 'react'
+import { setAppConfirm } from '../lib/confirm-bridge'
 import { ConfirmContext, type ConfirmFn, type ConfirmSpec } from './use-confirm'
 import { Button } from './ui'
 
@@ -15,6 +16,11 @@ export function ConfirmProvider({ children }: PropsWithChildren): React.JSX.Elem
       setSpec(next)
     })
   }, [])
+
+  useEffect(() => {
+    setAppConfirm(confirm)
+    return () => setAppConfirm(null)
+  }, [confirm])
 
   useEffect(() => {
     if (spec && dialogRef.current && !dialogRef.current.open) {

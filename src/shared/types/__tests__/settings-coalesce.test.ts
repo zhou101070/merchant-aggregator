@@ -37,6 +37,32 @@ describe('coalesceAppSettings', () => {
     const r = coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopMinIntervalMs: 1 })
     expect(r.shopMinIntervalMs).toBe(500)
   })
+
+  it('clamps shopPageConcurrency to 1–10', () => {
+    expect(coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 0 }).shopPageConcurrency).toBe(
+      1
+    )
+    expect(
+      coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 99 }).shopPageConcurrency
+    ).toBe(10)
+    expect(
+      coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 3.7 }).shopPageConcurrency
+    ).toBe(3)
+    expect(
+      coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 'x' as unknown as number })
+        .shopPageConcurrency
+    ).toBe(DEFAULT_APP_SETTINGS.shopPageConcurrency)
+  })
+
+  it('accepts theme modes and rejects invalid', () => {
+    expect(coalesceAppSettings(DEFAULT_APP_SETTINGS, { theme: 'dark' }).theme).toBe('dark')
+    expect(coalesceAppSettings(DEFAULT_APP_SETTINGS, { theme: 'light' }).theme).toBe('light')
+    const bad = coalesceAppSettings(DEFAULT_APP_SETTINGS, {
+      // @ts-expect-error intentional corrupt payload
+      theme: 'auto'
+    })
+    expect(bad.theme).toBe('system')
+  })
 })
 
 describe('dualWriteSettingsPatch', () => {

@@ -1,5 +1,5 @@
 import { nameNorm } from '@shared/lib/name-norm'
-import { parseShopUrl } from '@shared/lib/url-parse'
+import { identifyShopPlatform } from '@shared/platforms/identify'
 import type { PriceaiMerchantRawParsed } from './zod'
 
 export interface NormalizedMerchantRow {
@@ -74,31 +74,43 @@ export interface DerivedShopRef {
 }
 
 /**
- * Host-gated shop ref derivation (bugfix for wrong-platform attribution).
- * Returns null when URL/host does not match a registered scrapable shop profile.
+ * Shop ref derivation via identifyShopPlatform.
+ * - shopApi: URL-derived registered profile + token only
+ * - host-token families (dujiao / yiciyuan): collector_kind/host → platform + hostname token
  */
 export function deriveShopRef(input: {
   host?: string | null
   shopUrl?: string | null
   entryUrl?: string | null
+  collectorKind?: string | null
 }): DerivedShopRef | null {
-  const fromShop = parseShopUrl(input.shopUrl)
-  if (fromShop) {
+  const identity = identifyShopPlatform({
+    host: input.host,
+    shopUrl: input.shopUrl,
+    entryUrl: input.entryUrl,
+    collectorKind: input.collectorKind
+  })
+  if (!identity.platformId || !identity.token) return null
+
+  if (
+    (identity.scrapeStrategy === 'dujiao' || identity.scrapeStrategy === 'yiciyuan') &&
+    identity.scrapable
+  ) {
     return {
-      shop_platform: fromShop.platformId,
-      shop_token: fromShop.token,
-      ldxp_token: fromShop.platformId === 'ldxp' ? fromShop.token : null
+      shop_platform: identity.platformId,
+      shop_token: identity.token,
+      ldxp_token: null
     }
   }
-  const fromEntry = parseShopUrl(input.entryUrl)
-  if (fromEntry) {
-    return {
-      shop_platform: fromEntry.platformId,
-      shop_token: fromEntry.token,
-      ldxp_token: fromEntry.platformId === 'ldxp' ? fromEntry.token : null
-    }
+
+  // shopApi: only URL-derived registered profile refs (incl. disabled → PAUSED later).
+  if (identity.source !== 'url') return null
+  if (identity.family !== 'shopapi') return null
+  return {
+    shop_platform: identity.platformId,
+    shop_token: identity.token,
+    ldxp_token: identity.platformId === 'ldxp' ? identity.token : null
   }
-  return null
 }
 
 export function normalizeMerchant(
@@ -114,7 +126,8 @@ export function normalizeMerchant(
   const ref = deriveShopRef({
     host: raw.host,
     shopUrl: raw.shopUrl,
-    entryUrl: raw.entryUrl
+    entryUrl: raw.entryUrl,
+    collectorKind: raw.collectorKind
   })
 
   return {

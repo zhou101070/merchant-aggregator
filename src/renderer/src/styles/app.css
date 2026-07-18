@@ -1011,19 +1011,12 @@
   opacity: 0.55;
 }
 
-/* 行内动作悬停显影(键盘焦点不受影响) */
+/* 行内动作：始终全不透明，避免像禁用 */
 .row-actions {
   display: inline-flex;
   align-items: center;
   gap: 10px;
   white-space: nowrap;
-  opacity: 0.4;
-  transition: opacity var(--dur-1) var(--ease-out);
-}
-.table tbody tr:hover .row-actions,
-.table tbody tr.selected .row-actions,
-.row-actions:focus-within {
-  opacity: 1;
 }
 
 /* 表格底部状态条 */
@@ -1137,19 +1130,48 @@ dialog.dialog {
   box-shadow: var(--shadow-3);
   padding: 0;
   width: min(440px, calc(100vw - 48px));
+  /* 避开 Win WCO / 窗口顶，避免弹窗贴顶 */
+  margin: max(24px, calc(env(titlebar-area-height, 0px) + 16px)) auto 24px;
+  max-height: calc(100vh - env(titlebar-area-height, 0px) - 48px);
 }
 dialog.dialog.dialog-wide {
   width: min(640px, calc(100vw - 48px));
-  max-height: min(80vh, 720px);
+  max-height: min(80vh, 720px, calc(100vh - env(titlebar-area-height, 0px) - 48px));
 }
-dialog.dialog.dialog-wide[open] {
+dialog.dialog.dialog-merchant {
+  width: min(960px, calc(100vw - 48px));
+  max-height: min(88vh, 820px, calc(100vh - env(titlebar-area-height, 0px) - 48px));
+}
+dialog.dialog.dialog-wide[open],
+dialog.dialog.dialog-merchant[open] {
   display: flex;
   flex-direction: column;
 }
-dialog.dialog.dialog-wide .dialog-body {
+dialog.dialog.dialog-wide .dialog-body,
+dialog.dialog.dialog-merchant .dialog-body {
   overflow: auto;
   min-height: 0;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.merchant-dialog-products {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  margin-top: 4px;
+}
+/* 分组与「店内商品」标题底部分隔线拉开 */
+.merchant-dialog-products .filter-bar {
+  margin-top: 10px;
+}
+.merchant-dialog-table-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  margin: 0 -8px;
+  padding: 0 8px 12px;
 }
 dialog.dialog::backdrop {
   background: oklch(0 0 0 / 45%);
@@ -1248,69 +1270,6 @@ dialog.dialog[open] {
 .toast.leaving {
   opacity: 0;
   transform: translateY(-4px);
-}
-
-/* Drawer(比价) */
-.scrim {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-backdrop);
-  background: oklch(0 0 0 / 20%);
-  border: none;
-  padding: 0;
-  cursor: default;
-}
-.drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(420px, 92vw);
-  z-index: var(--z-drawer);
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-overlay);
-  border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-3);
-  transform: none;
-  opacity: 1;
-  transition:
-    transform var(--dur-3) var(--ease-out),
-    opacity var(--dur-3) var(--ease-out);
-}
-@starting-style {
-  .drawer {
-    transform: translateX(16px);
-    opacity: 0;
-  }
-}
-.drawer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.drawer-head strong {
-  font-size: var(--text-m);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.drawer-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-.drawer-note {
-  margin: 12px 16px 0;
-  padding: 8px 12px;
-  border-radius: var(--radius-s);
-  background: var(--warn-wash);
-  color: var(--warn);
-  font-size: var(--text-s);
 }
 
 /* ================= 页面 ================= */
@@ -1419,43 +1378,67 @@ dialog.dialog[open] {
   background: color-mix(in srgb, var(--ok, #3d8b5a) 8%, transparent);
 }
 
-/* 起始态(最近浏览) */
-.start-list {
+/* 最近浏览：紧凑 chip 换行 */
+.recent-chips {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 12px;
 }
-.start-item {
-  display: flex;
+.recent-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  padding: 10px 14px;
-  background: none;
+  max-width: min(100%, 280px);
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--bg-elevated, transparent);
+  overflow: hidden;
+}
+.recent-chip:hover {
+  border-color: var(--ink-4);
+}
+.recent-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
   border: none;
-  border-bottom: 1px solid var(--border);
+  background: none;
   color: var(--ink);
-  font-size: var(--text-m);
+  font-size: var(--text-s);
   cursor: pointer;
-  transition: background var(--dur-1) var(--ease-out);
+  text-align: left;
 }
-.start-item:last-child {
-  border-bottom: none;
-}
-.start-item:hover {
+.recent-chip-kind {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
   background: var(--bg-hover);
+  color: var(--ink-3);
 }
-.start-item .t {
-  flex: 1;
+.recent-chip-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.start-item .meta {
+.recent-chip-time {
   flex: none;
-  font-size: var(--text-s);
   color: var(--ink-3);
+  font-size: 11px;
+}
+.recent-chip-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex: none;
+  padding-right: 2px;
+  border-left: 1px solid var(--border);
 }
 
 /* 商家主从 */
@@ -1479,77 +1462,32 @@ dialog.dialog[open] {
   min-height: 0;
   overflow: auto;
 }
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr);
-}
-.split.panel-fill {
-  min-height: 0;
-  /* 单行撑满面板高度,子项 min-height:0 才能各自 overflow 内滚 */
-  grid-template-rows: minmax(0, 1fr);
-}
-.split > * {
-  min-height: 0;
-}
-/* 详情打开时收起次要列,给店名留宽 */
-.split .col-host {
-  display: none;
-}
-.split > .list-side {
-  min-width: 0;
-  overflow: auto;
-}
-.detail-pane {
-  border-left: 1px solid var(--border);
-  min-width: 0;
-  min-height: 0;
-  /* 头信息固定,商品表在 .detail-products 内滚 */
-  overflow: hidden;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-/* 覆盖 .panel { overflow:hidden },占满详情剩余高度;表体单独内滚 */
-.detail-pane > .detail-products {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.detail-pane > .detail-products > .panel-head {
-  flex-shrink: 0;
-}
-.detail-pane > .detail-products > :not(.panel-head) {
-  flex: 1 1 0;
-  min-height: 0;
-  overflow: auto;
-}
-/* 后三列完整显示,标题列吃剩余宽度并省略 */
-.detail-products .table {
+/* 商家详情弹窗内商品表 */
+table.detail-products {
   table-layout: fixed;
 }
-.detail-products .table .col-title {
+table.detail-products .col-title {
   width: auto;
   min-width: 0;
 }
-.detail-products .table .col-price {
+table.detail-products .col-price {
   width: 5.75rem;
   white-space: nowrap;
 }
-.detail-products .table .col-stock {
+table.detail-products .col-stock {
   width: 3.25rem;
   white-space: nowrap;
 }
-.detail-products .table td.col-title .ellipsis {
-  max-width: 100%;
+table.detail-products .col-actions {
+  width: 7.5rem;
+  white-space: nowrap;
+  vertical-align: middle;
 }
-.detail-title {
-  margin: 0;
-  font-size: var(--text-xl);
-  font-weight: 600;
-  line-height: 1.35;
+table.detail-products .col-actions .row-actions {
+  gap: 6px;
+}
+table.detail-products td.col-title .ellipsis {
+  max-width: 100%;
 }
 .detail-id {
   font-family: var(--font-data);

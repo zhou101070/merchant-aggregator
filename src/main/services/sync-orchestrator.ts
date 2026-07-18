@@ -12,9 +12,18 @@ import {
 } from '@shared/types/sync'
 import { IPC_CHANNELS } from '@shared/types/ipc'
 import { APP_NAME, BOOTSTRAP_TOP_N } from '@shared/constants'
-import { parseShopUrl } from '@shared/lib/url-parse'
-import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
+import {
+  DUJIAO_PLATFORM_ID,
+  YICIYUAN_PLATFORM_ID,
+  identifyShopPlatform,
+  identityToScrapeRef
+} from '@shared/platforms/identify'
+import { enabledScrapablePlatformIds, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { findProfileById } from '@shared/platforms/shop-types'
+import { resolveDujiaoBaseUrl } from '../platforms/dujiao/client'
+import { resolveYiciyuanBaseUrl } from '../platforms/yiciyuan/client'
+import { probeYiciyuan } from '../platforms/fingerprint/probe'
+import { IntervalLimiter } from './rate-limiter'
 import type { Repositories } from '../db/repositories'
 import { createLogger } from '../utils/logger'
 import { fetchAllMerchants } from '../platforms/priceai/fetcher-merchants'
@@ -22,6 +31,27 @@ import { PriceaiClient } from '../platforms/priceai/client'
 import { scrapeShopTarget, type ShopScrapeTarget } from '../platforms/registry'
 
 const log = createLogger('sync')
+
+function resolveHostTokenBaseUrl(
+  platformId: string,
+  opts: { host: string; shopUrl?: string | null; entryUrl?: string | null }
+): string | null {
+  if (platformId === DUJIAO_PLATFORM_ID) {
+    return resolveDujiaoBaseUrl({
+      host: opts.host,
+      shopUrl: opts.shopUrl,
+      entryUrl: opts.entryUrl
+    })
+  }
+  if (platformId === YICIYUAN_PLATFORM_ID || platformId === 'kami') {
+    return resolveYiciyuanBaseUrl({
+      host: opts.host,
+      shopUrl: opts.shopUrl,
+      entryUrl: opts.entryUrl
+    })
+  }
+  return null
+}
 
 type Lane = 'priceai' | 'shop'
 
@@ -99,13 +129,17 @@ export class SyncOrchestrator {
       if (!target.token || !target.platformId) {
         throw new AppError('NOT_FOUND', 'shop platform + token required (or shopUrl)')
       }
-      const profile = findProfileById(target.platformId, SHOP_PROFILES)
-      if (!profile) throw new AppError('NOT_FOUND', `unknown platform ${target.platformId}`)
-      if (!profile.enabled) {
-        throw new AppError('PAUSED', `platform ${profile.id} scrape not enabled yet`, {
-          platformId: profile.id,
-          probeStatus: profile.probeStatus
-        })
+      if (target.platformId === DUJIAO_PLATFORM_ID) {
+        // host-as-token family; always enabled when resolved
+      } else {
+        const profile = findProfileById(target.platformId, SHOP_PROFILES)
+        if (!profile) throw new AppError('NOT_FOUND', `unknown platform ${target.platformId}`)
+        if (!profile.enabled) {
+          throw new AppError('PAUSED', `platform ${profile.id} scrape not enabled yet`, {
+            platformId: profile.id,
+            probeStatus: profile.probeStatus
+          })
+        }
       }
     }
     if (jobType === 'shop_selected') {
@@ -218,8 +252,8 @@ export class SyncOrchestrator {
   }
 
   /**
-   * Resolve scrape target. Priority (design §4):
-   * shopUrl → platformId+token → merchantId → bare token (legacy default ldxp).
+   * Resolve scrape target via identifyShopPlatform.
+   * Priority (design §4): shopUrl → platformId+token → merchantId → bare token (legacy ldxp).
    * Never uses product item URLs as shop roots.
    */
   resolveShopTarget(req: {
@@ -229,62 +263,119 @@ export class SyncOrchestrator {
     shopUrl?: string
   }): ShopScrapeTarget {
     if (req.shopUrl?.trim()) {
-      const parsed = parseShopUrl(req.shopUrl.trim())
-      if (!parsed) {
-        throw new AppError('INVALID_URL', 'unrecognized shop URL', { shopUrl: req.shopUrl })
+      const shopUrl = req.shopUrl.trim()
+      const identity = identifyShopPlatform({ shopUrl })
+      const ref = identityToScrapeRef(identity)
+      if (!ref) {
+        throw new AppError(
+          identity.scrapeStrategy === 'unsupported' ? 'INTERNAL' : 'INVALID_URL',
+          identity.reason || 'unrecognized shop URL',
+          { shopUrl: req.shopUrl, family: identity.family }
+        )
       }
       let merchantId = req.merchantId ?? null
+      let baseUrl: string | null = null
       if (!merchantId) {
-        const m = this.repos.merchants.findByShopRef(parsed.platformId, parsed.token)
+        const m = this.repos.merchants.findByShopRef(ref.platformId, ref.token)
         if (m) merchantId = m.id
       }
+      baseUrl = resolveHostTokenBaseUrl(ref.platformId, {
+        host: ref.token,
+        shopUrl,
+        entryUrl: shopUrl
+      })
       return {
-        platformId: parsed.platformId,
-        token: parsed.token,
+        platformId: ref.platformId,
+        token: ref.token,
         merchantId,
-        label: parsed.shopUrl
+        label: shopUrl,
+        identity,
+        baseUrl
       }
     }
 
     if (req.token && req.platformId) {
-      const m = this.repos.merchants.findByShopRef(req.platformId, req.token)
+      const identity = identifyShopPlatform({
+        shopPlatform: req.platformId,
+        shopToken: req.token
+      })
+      const ref = identityToScrapeRef(identity)
+      if (!ref) {
+        throw new AppError('NOT_FOUND', identity.reason || 'platform not scrapable', {
+          platformId: req.platformId,
+          family: identity.family
+        })
+      }
+      const m = this.repos.merchants.findByShopRef(ref.platformId, ref.token)
+      const baseUrl = resolveHostTokenBaseUrl(ref.platformId, {
+        host: ref.token,
+        shopUrl: m?.shopUrl,
+        entryUrl: m?.entryUrl
+      })
       return {
-        platformId: req.platformId,
-        token: req.token,
-        merchantId: m?.id ?? req.merchantId ?? null
+        platformId: ref.platformId,
+        token: ref.token,
+        merchantId: m?.id ?? req.merchantId ?? null,
+        identity,
+        baseUrl,
+        shopName: m?.name ?? null
       }
     }
 
     if (req.merchantId) {
       const m = this.repos.merchants.getById(req.merchantId)
       if (!m) throw new AppError('NOT_FOUND', 'merchant not found')
-      let platformId = req.platformId || m.shopPlatform || null
-      let token = req.token || m.shopToken || null
-      // Lazy backfill: parse merchant shop_url / entry_url when shop_* empty
-      if (!platformId || !token) {
-        const parsed = parseShopUrl(m.shopUrl) || parseShopUrl(m.entryUrl)
-        if (parsed) {
-          platformId = platformId || parsed.platformId
-          token = token || parsed.token
-        }
+      const identity = identifyShopPlatform({
+        host: m.host,
+        shopUrl: m.shopUrl,
+        entryUrl: m.entryUrl,
+        shopPlatform: req.platformId || m.shopPlatform,
+        shopToken: req.token || m.shopToken,
+        ldxpToken: m.ldxpToken,
+        collectorKind: m.collectorKind
+      })
+      const ref = identityToScrapeRef(identity)
+      if (!ref) {
+        throw new AppError('NOT_FOUND', identity.reason || 'merchant has no scrapable shop ref', {
+          merchantId: m.id,
+          family: identity.family,
+          collectorKind: m.collectorKind
+        })
       }
-      if (!platformId && m.ldxpToken) {
-        platformId = 'ldxp'
-        token = token || m.ldxpToken
+      const baseUrl = resolveHostTokenBaseUrl(ref.platformId, {
+        host: ref.token,
+        shopUrl: m.shopUrl,
+        entryUrl: m.entryUrl
+      })
+      // Disabled profile still resolves so scraper can return PAUSED.
+      return {
+        platformId: ref.platformId,
+        token: ref.token,
+        merchantId: m.id,
+        label: m.name,
+        identity,
+        baseUrl,
+        shopName: m.name
       }
-      if (!platformId || !token) {
-        throw new AppError('NOT_FOUND', 'merchant has no scrapable shop ref')
-      }
-      return { platformId, token, merchantId: m.id, label: m.name }
     }
 
     // bare token without platform → default ldxp (legacy IPC only)
     if (req.token) {
-      const m = this.repos.merchants.findByShopRef('ldxp', req.token)
+      const identity = identifyShopPlatform({
+        shopPlatform: 'ldxp',
+        shopToken: req.token,
+        ldxpToken: req.token
+      })
+      const ref = identityToScrapeRef(identity)
+      if (!ref) {
+        throw new AppError('NOT_FOUND', identity.reason || 'token not scrapable')
+      }
+      const m = this.repos.merchants.findByShopRef(ref.platformId, ref.token)
       return {
-        platformId: 'ldxp',
-        token: req.token,
-        merchantId: m?.id ?? null
+        platformId: ref.platformId,
+        token: ref.token,
+        merchantId: m?.id ?? null,
+        identity
       }
     }
 
@@ -307,7 +398,7 @@ export class SyncOrchestrator {
     try {
       const settings = this.repos.settings.get()
       const minInterval = settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs
-      const enabledIds = SHOP_PROFILES.filter((p) => p.enabled).map((p) => p.id)
+      const enabledIds = enabledScrapablePlatformIds()
 
       if (jobType === 'merchants') {
         const client = new PriceaiClient({ userAgent: settings.priceaiUa })
@@ -355,11 +446,7 @@ export class SyncOrchestrator {
           jobId,
           'bootstrap',
           signal,
-          targets.map((m) => ({
-            platformId: m.shopPlatform,
-            token: m.shopToken,
-            merchantId: m.id
-          })),
+          targets.map((m) => this.resolveShopTarget({ merchantId: m.id })),
           minInterval,
           { extraMeta: { merchantsUpserted: merchants.rows.length } }
         )
@@ -376,10 +463,7 @@ export class SyncOrchestrator {
             }
           })
           .filter((t): t is ShopScrapeTarget => !!t && !!t.token && !!t.platformId)
-          .filter((t) => {
-            const p = findProfileById(t.platformId, SHOP_PROFILES)
-            return p?.enabled === true
-          })
+          .filter((t) => enabledIds.includes(t.platformId))
         if (!targets.length) {
           throw new AppError('NOT_FOUND', 'no scrapable shop ref on selected merchants')
         }
@@ -395,11 +479,7 @@ export class SyncOrchestrator {
         // D15/D16: filter disabled platforms
         const targets = all
           .filter((m) => enabledIds.includes(m.shopPlatform))
-          .map((m) => ({
-            platformId: m.shopPlatform,
-            token: m.shopToken,
-            merchantId: m.id
-          }))
+          .map((m) => this.resolveShopTarget({ merchantId: m.id }))
         const skippedDisabled = all.length - targets.length
         if (!targets.length) {
           this.finishSuccess(
@@ -434,7 +514,13 @@ export class SyncOrchestrator {
     signal: AbortSignal,
     client: PriceaiClient,
     intervalMs: number
-  ): Promise<Awaited<ReturnType<typeof fetchAllMerchants>> & { deletedNoLink: number }> {
+  ): Promise<
+    Awaited<ReturnType<typeof fetchAllMerchants>> & {
+      deletedNoLink: number
+      fingerprintMatched: number
+      fingerprintRejected: number
+    }
+  > {
     const result = await fetchAllMerchants({
       client,
       intervalMs,
@@ -444,7 +530,71 @@ export class SyncOrchestrator {
     })
     this.repos.merchants.upsertMany(result.rows)
     const deletedNoLink = this.repos.merchants.deleteWithoutExternalLinks()
-    return { ...result, deletedNoLink }
+    const fp = await this.probeYiciyuanCandidates(jobId, jobType, signal, intervalMs)
+    return { ...result, deletedNoLink, ...fp }
+  }
+
+  /**
+   * Live-probe kami/yiciyuan candidates missing a confirmed scrapable ref.
+   * Match → write shop_platform=yiciyuan; not_family → leave without ref.
+   */
+  private async probeYiciyuanCandidates(
+    jobId: string,
+    jobType: SyncJobType,
+    signal: AbortSignal,
+    intervalMs: number
+  ): Promise<{ fingerprintMatched: number; fingerprintRejected: number }> {
+    const candidates = this.repos.merchants.listYiciyuanProbeCandidates(40)
+    if (!candidates.length) {
+      return { fingerprintMatched: 0, fingerprintRejected: 0 }
+    }
+    const limiter = new IntervalLimiter(Math.max(intervalMs, 400))
+    let matched = 0
+    let rejected = 0
+    for (let i = 0; i < candidates.length; i += 1) {
+      if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
+      const c = candidates[i]!
+      this.progress(
+        jobId,
+        jobType,
+        'fingerprint',
+        i,
+        candidates.length,
+        `probe yiciyuan ${c.host} (${i + 1}/${candidates.length})`
+      )
+      await limiter.waitTurn()
+      if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
+      try {
+        const result = await probeYiciyuan({
+          host: c.host,
+          shopUrl: c.shopUrl,
+          entryUrl: c.entryUrl
+        })
+        if (result.kind === 'match') {
+          this.repos.merchants.setShopRef(c.id, YICIYUAN_PLATFORM_ID, c.host.toLowerCase())
+          matched += 1
+        } else if (result.kind === 'not_family') {
+          rejected += 1
+          log.info('yiciyuan probe rejected', { host: c.host, message: result.message })
+        } else {
+          log.info('yiciyuan probe network', { host: c.host, message: result.message })
+        }
+      } catch (err) {
+        log.warn('yiciyuan probe error', {
+          host: c.host,
+          err: err instanceof Error ? err.message : String(err)
+        })
+      }
+    }
+    this.progress(
+      jobId,
+      jobType,
+      'fingerprint',
+      candidates.length,
+      candidates.length,
+      `fingerprint matched ${matched}, rejected ${rejected}`
+    )
+    return { fingerprintMatched: matched, fingerprintRejected: rejected }
   }
 
   private async runMerchants(
@@ -460,13 +610,15 @@ export class SyncOrchestrator {
       'merchants',
       result.rows.length,
       result.total,
-      `upserted ${result.rows.length}, dropped no-link ${result.droppedNoLink}, deleted stale ${result.deletedNoLink}`,
+      `upserted ${result.rows.length}, dropped no-link ${result.droppedNoLink}, deleted stale ${result.deletedNoLink}, fingerprint +${result.fingerprintMatched}/-${result.fingerprintRejected}`,
       {
         pages: result.pages,
         generatedAt: result.generatedAt,
         fetchedUnique: result.fetchedUnique,
         droppedNoLink: result.droppedNoLink,
-        deletedNoLink: result.deletedNoLink
+        deletedNoLink: result.deletedNoLink,
+        fingerprintMatched: result.fingerprintMatched,
+        fingerprintRejected: result.fingerprintRejected
       }
     )
   }
@@ -490,9 +642,16 @@ export class SyncOrchestrator {
       details?: unknown
     }[] = []
     const total = targets.length
+    const pageConcurrency = this.repos.settings.get().shopPageConcurrency
 
     for (const target of targets) {
       if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
+      // Health first so UI reloads on progress see "同步中"
+      if (target.merchantId) {
+        this.repos.merchants.setAppHealth(target.merchantId, 'retrying')
+      } else {
+        this.repos.merchants.setAppHealthByShopRef(target.platformId, target.token, 'retrying')
+      }
       this.progress(
         jobId,
         jobType,
@@ -501,15 +660,11 @@ export class SyncOrchestrator {
         total,
         `scraping ${target.platformId}:${target.token} (${done + 1}/${total})`
       )
-      if (target.merchantId) {
-        this.repos.merchants.setAppHealth(target.merchantId, 'retrying')
-      } else {
-        this.repos.merchants.setAppHealthByShopRef(target.platformId, target.token, 'retrying')
-      }
       try {
         const result = await scrapeShopTarget({
           target,
           minIntervalMs,
+          pageConcurrency,
           signal,
           onProgress: (p) =>
             this.progress(
@@ -521,7 +676,11 @@ export class SyncOrchestrator {
               `${target.platformId}:${target.token}: ${p.current}/${p.total}`
             )
         })
-        this.repos.shopProducts.upsertMany(result.rows)
+        const source =
+          result.rows[0]?.source ??
+          findProfileById(target.platformId, SHOP_PROFILES)?.sourceId ??
+          target.platformId
+        this.repos.shopProducts.replaceForShop(source, target.token, result.rows)
         if (target.merchantId) {
           this.repos.merchants.setAppHealth(target.merchantId, 'healthy')
           this.repos.merchants.relinkShopProducts(
@@ -533,6 +692,15 @@ export class SyncOrchestrator {
           this.repos.merchants.setAppHealthByShopRef(target.platformId, target.token, 'healthy')
         }
         done += 1
+        // Emit after each shop so list can refresh health + local product counts mid-batch
+        this.progress(
+          jobId,
+          jobType,
+          'shop',
+          done,
+          total,
+          `ok ${target.platformId}:${target.token} (${done}/${total})`
+        )
       } catch (err) {
         if (err instanceof AppError && err.code === 'CANCELLED') throw err
         failed += 1
@@ -540,17 +708,24 @@ export class SyncOrchestrator {
         const message = err instanceof Error ? err.message : String(err)
         const code = err instanceof AppError ? err.code : 'INTERNAL'
         const details = err instanceof AppError ? err.details : undefined
+        const notFamily =
+          err instanceof AppError &&
+          err.code === 'SCHEMA_VALIDATION' &&
+          !!(err.details as { notFamily?: boolean } | undefined)?.notFamily
         errors.push({
           merchantId: target.merchantId,
           platformId: target.platformId,
           token: target.token,
-          message,
+          message: notFamily ? `指纹不符: ${message}` : message,
           code,
           details
         })
-        if (target.merchantId) {
+        if (notFamily && target.merchantId) {
+          // Wrong family (e.g. kami mis-bucket): drop scrapable ref so it leaves the queue
+          this.repos.merchants.clearShopRef(target.merchantId)
+        } else if (target.merchantId) {
           this.repos.merchants.setAppHealth(target.merchantId, 'failing', message)
-        } else {
+        } else if (!notFamily) {
           this.repos.merchants.setAppHealthByShopRef(
             target.platformId,
             target.token,
@@ -558,11 +733,20 @@ export class SyncOrchestrator {
             message
           )
         }
+        this.progress(
+          jobId,
+          jobType,
+          'shop',
+          done,
+          total,
+          `${notFamily ? 'not-family' : 'fail'} ${target.platformId}:${target.token} (${done}/${total})`
+        )
         log.warn('shop scrape failed', {
           platformId: target.platformId,
           token: target.token,
           code,
           message,
+          notFamily,
           details
         })
       }
