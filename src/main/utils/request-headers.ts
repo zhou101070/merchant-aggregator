@@ -107,6 +107,7 @@ export function browserJsonGetHeaders(options: JsonGetHeadersOptions): Record<st
 
 export interface DocumentNavHeadersOptions extends BaseBrowserHeaderOptions {
   visitorId?: string
+  cookie?: string
 }
 
 /** First-party document navigation (shop page warmup). */
@@ -122,6 +123,7 @@ export function browserDocumentHeaders(options: DocumentNavHeadersOptions): Reco
     'Sec-Fetch-User': '?1'
   }
   if (options.visitorId) headers.Visitorid = options.visitorId
+  if (options.cookie) headers.Cookie = options.cookie
   return headers
 }
 

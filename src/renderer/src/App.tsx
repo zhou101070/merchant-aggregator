@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { ConfirmProvider } from './components/dialog'
 import { KeepAlivePages } from './components/keep-alive-pages'
 import { ToastProvider } from './components/toast'
+import { WindowControls } from './components/window-controls'
 import { Icon } from './components/icons'
 import { IconButton, Kbd, Progress } from './components/ui'
 import { useSyncStatus } from './hooks/useSync'
@@ -95,29 +96,6 @@ export default function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [navigate])
 
-  // Win WCO 在网页之上,CSS 蒙层盖不住窗控;dialog 开关时同步调暗 titleBarOverlay
-  useEffect(() => {
-    let lastOpen = false
-    const sync = (): void => {
-      const open = document.querySelector('dialog[open]') != null
-      if (open === lastOpen) return
-      lastOpen = open
-      void window.api.window.setDialogOverlay(open)
-    }
-    const mo = new MutationObserver(sync)
-    mo.observe(document.documentElement, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ['open']
-    })
-    sync()
-    return () => {
-      mo.disconnect()
-      if (lastOpen) void window.api.window.setDialogOverlay(false)
-    }
-  }, [])
-
   return (
     <ToastProvider>
       <ConfirmProvider>
@@ -158,6 +136,7 @@ export default function App(): React.JSX.Element {
           </aside>
           <div className="main">
             <div className="drag-strip" aria-hidden="true" />
+            <WindowControls />
             <main className="content">
               <KeepAlivePages />
             </main>

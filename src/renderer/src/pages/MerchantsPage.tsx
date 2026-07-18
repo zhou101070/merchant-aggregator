@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Merchant } from '@shared/types/merchant'
 import type { ShopProduct } from '@shared/types/product'
-import { Badge, Button, Chip, Empty, Input, SkeletonRows, StatusDot } from '../components/ui'
+import { Badge, Button, Empty, Input, SkeletonRows, StatusDot } from '../components/ui'
 import { FilterBar, PageHeader } from '../components/layout'
 import { HealthStatus } from '../components/health-status'
 import { Select } from '../components/select'
@@ -15,8 +15,6 @@ import { useSyncStatus } from '../hooks/useSync'
 import { DUJIAO_PLATFORM_ID, YICIYUAN_PLATFORM_ID } from '@shared/platforms/identify'
 import { SHOP_PLATFORM_OTHER, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { shopAllSpec } from '../lib/confirm-sync'
-import { openExternalSafe } from '../lib/open-external'
-import { merchantStoreUrl } from '../lib/shop-url'
 import { resolveShopIdentity, resolveShopRef } from '../lib/shop-ref'
 import { formatSyncProgress } from '../lib/sync-labels'
 import { timeAgo } from '../lib/format-time'
@@ -61,8 +59,6 @@ export function MerchantsPage(): React.JSX.Element {
     rows: ShopProduct[]
   } | null>(null)
   const [loading, setLoading] = useState(false)
-  const [scrapableOnly, setScrapableOnly] = useState(false)
-  const [withoutShopProducts, setWithoutShopProducts] = useState(false)
   const [healthFilter, setHealthFilter] = useState<string>('all')
   const [platformFilter, setPlatformFilter] = useState<string>('all')
 
@@ -90,8 +86,6 @@ export function MerchantsPage(): React.JSX.Element {
     try {
       const res = await window.api.merchants.list({
         q: debouncedQ || undefined,
-        scrapableOnly: scrapableOnly || withoutShopProducts || undefined,
-        withoutShopProducts: withoutShopProducts || undefined,
         health: healthFilter === 'all' ? undefined : [healthFilter],
         shopPlatforms: platformFilter === 'all' ? undefined : [platformFilter],
         offset: 0,
@@ -109,7 +103,7 @@ export function MerchantsPage(): React.JSX.Element {
     } finally {
       setLoading(false)
     }
-  }, [debouncedQ, selectedId, scrapableOnly, withoutShopProducts, healthFilter, platformFilter])
+  }, [debouncedQ, selectedId, healthFilter, platformFilter])
 
   // Mid-batch shop sync keeps progress.status=running; advance current/message after each shop
   const shopSyncTick =
@@ -206,12 +200,6 @@ export function MerchantsPage(): React.JSX.Element {
       .then(() => toast(`已收藏商家：${m.name}`, 'ok'))
   }
 
-  function blockMerchant(m: Merchant): void {
-    void window.api.blocklist
-      .add({ targetType: 'merchant', targetId: m.id, titleSnapshot: m.name })
-      .then(() => toast(`已屏蔽商家：${m.name}（搜索不再显示）`, 'ok'))
-  }
-
   return (
     <div className="stack page-viewport">
       <PageHeader
@@ -258,30 +246,9 @@ export function MerchantsPage(): React.JSX.Element {
           onChange={(e) => setQ(e.target.value)}
           style={{ width: 220 }}
         />
-        <Chip on={scrapableOnly} onClick={() => setScrapableOnly((v) => !v)}>
-          仅可深刮
-        </Chip>
-        <Chip
-          on={withoutShopProducts}
-          onClick={() => {
-            setWithoutShopProducts((v) => {
-              if (!v) setScrapableOnly(true)
-              return !v
-            })
-          }}
-        >
-          尚未同步商品
-        </Chip>
         <Select
           value={platformFilter}
-          onValueChange={(v) => {
-            setPlatformFilter(v)
-            // 「其他」= 未注册 scrapable 平台，几乎都不可深刮；与「仅可深刮」并用必为空
-            if (v === SHOP_PLATFORM_OTHER) {
-              setScrapableOnly(false)
-              setWithoutShopProducts(false)
-            }
-          }}
+          onValueChange={setPlatformFilter}
           ariaLabel="平台筛选"
           options={[
             { value: 'all', label: '全部平台' },
@@ -330,20 +297,12 @@ export function MerchantsPage(): React.JSX.Element {
         <div className="panel">
           <Empty
             title={
-              platformFilter !== 'all' ||
-              scrapableOnly ||
-              withoutShopProducts ||
-              healthFilter !== 'all' ||
-              debouncedQ
+              platformFilter !== 'all' || healthFilter !== 'all' || debouncedQ
                 ? '没有匹配的商家'
                 : '还没有商家数据'
             }
             actions={
-              platformFilter === 'all' &&
-              !scrapableOnly &&
-              !withoutShopProducts &&
-              healthFilter === 'all' &&
-              !debouncedQ ? (
+              platformFilter === 'all' && healthFilter === 'all' && !debouncedQ ? (
                 <Button variant="primary" onClick={() => void startMerchants()} disabled={busy}>
                   从 PriceAI 同步商家
                 </Button>
@@ -351,8 +310,6 @@ export function MerchantsPage(): React.JSX.Element {
                 <Button
                   onClick={() => {
                     setPlatformFilter('all')
-                    setScrapableOnly(false)
-                    setWithoutShopProducts(false)
                     setHealthFilter('all')
                     setQ('')
                   }}
@@ -363,13 +320,9 @@ export function MerchantsPage(): React.JSX.Element {
             }
           >
             {platformFilter === SHOP_PLATFORM_OTHER
-              ? '「其他」为非链动/catfk 等未注册发卡站；不要与「仅可深刮」同时开启。'
-              : platformFilter !== 'all' ||
-                  scrapableOnly ||
-                  withoutShopProducts ||
-                  healthFilter !== 'all' ||
-                  debouncedQ
-                ? '试试放宽平台、健康状态或可深刮条件。'
+              ? '「其他」为非链动/catfk 等未注册发卡站。'
+              : platformFilter !== 'all' || healthFilter !== 'all' || debouncedQ
+                ? '试试放宽平台或健康状态筛选。'
                 : '商家主档来自 PriceAI，只需同步一次，之后按需更新。'}
           </Empty>
         </div>
@@ -394,14 +347,12 @@ export function MerchantsPage(): React.JSX.Element {
                   <th>同步状态</th>
                   <th className="num">本地商品</th>
                   <th className="col-host">host</th>
-                  <th className="col-actions"></th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((m) => {
                   const canScrape = scrapable(m)
                   const isSelected = m.id === selectedId
-                  const storeUrl = merchantStoreUrl(m)
                   return (
                     <tr
                       key={m.id}
@@ -447,19 +398,6 @@ export function MerchantsPage(): React.JSX.Element {
                         {m.localProductCount > 0 ? m.localProductCount : '—'}
                       </td>
                       <td className="mono muted col-host">{m.host ?? '—'}</td>
-                      <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-                        {storeUrl ? (
-                          <div className="row-actions">
-                            <Button
-                              variant="primary"
-                              size="s"
-                              onClick={() => void openExternalSafe(storeUrl)}
-                            >
-                              打开店铺
-                            </Button>
-                          </div>
-                        ) : null}
-                      </td>
                     </tr>
                   )
                 })}
@@ -487,8 +425,8 @@ export function MerchantsPage(): React.JSX.Element {
             toast(`已开始同步：${m.name}`)
           }}
           onFavorite={favoriteMerchant}
-          onBlock={blockMerchant}
           onRefreshStock={refreshProductStock}
+          onBlockStateChange={() => void load()}
         />
       ) : null}
     </div>

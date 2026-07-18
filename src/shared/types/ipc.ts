@@ -8,8 +8,15 @@ import type {
   ShopProductListQuery
 } from './product'
 import type { SearchQuery, SearchResult } from './search'
+import type {
+  ProxyCoreApplyRequest,
+  ProxyCoreDetail,
+  ProxyCoreStatus,
+  ProxyCallLogEntry
+} from './proxy-core'
 import type { AppSettings } from './settings'
 import type {
+  SyncHttpRequestEntry,
   SyncJobListQuery,
   SyncJobListResult,
   SyncProgressEvent,
@@ -28,6 +35,10 @@ export const IPC_CHANNELS = {
   syncCancel: 'sync:cancel',
   syncStatus: 'sync:status',
   syncProgress: 'sync:progress',
+  /** main → renderer: single SyncHttpRequestEntry upsert */
+  syncRequestLog: 'sync:requestLog',
+  syncListRequestLogs: 'sync:listRequestLogs',
+  syncClearRequestLogs: 'sync:clearRequestLogs',
   syncDeleteJob: 'sync:deleteJob',
   syncClearHistory: 'sync:clearHistory',
   syncListJobs: 'sync:listJobs',
@@ -45,8 +56,19 @@ export const IPC_CHANNELS = {
   settingsSet: 'settings:set',
   shellOpenExternal: 'shell:openExternal',
   diagnosticsGet: 'diagnostics:get',
-  /** Win: 弹窗打开时调暗 titleBarOverlay,模拟蒙层盖住窗控区 */
-  windowSetDialogOverlay: 'window:setDialogOverlay'
+  /** Win 自绘窗控 */
+  windowMinimize: 'window:minimize',
+  windowMaximizeToggle: 'window:maximizeToggle',
+  windowClose: 'window:close',
+  windowIsMaximized: 'window:isMaximized',
+  /** main → renderer: boolean */
+  windowMaximized: 'window:maximized',
+  proxyCoreStatus: 'proxyCore:status',
+  proxyCoreApply: 'proxyCore:apply',
+  proxyCoreDetail: 'proxyCore:detail',
+  proxyCoreSetCallLog: 'proxyCore:setCallLog',
+  proxyCoreClearCallLogs: 'proxyCore:clearCallLogs',
+  proxyCoreClearBadNodes: 'proxyCore:clearBadNodes'
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
@@ -74,7 +96,10 @@ export interface RendererApi {
     listJobs: (q?: SyncJobListQuery) => Promise<SyncJobListResult>
     deleteJob: (jobId: string) => Promise<{ ok: boolean; reason?: string }>
     clearHistory: () => Promise<{ deleted: number }>
+    listRequestLogs: () => Promise<SyncHttpRequestEntry[]>
+    clearRequestLogs: () => Promise<{ ok: boolean }>
     onProgress: (cb: (e: SyncProgressEvent) => void) => () => void
+    onRequestLog: (cb: (e: SyncHttpRequestEntry) => void) => () => void
   }
   favorites: {
     list: () => Promise<Favorite[]>
@@ -116,6 +141,19 @@ export interface RendererApi {
     get: () => Promise<Record<string, unknown>>
   }
   window: {
-    setDialogOverlay: (open: boolean) => Promise<void>
+    minimize: () => Promise<void>
+    maximizeToggle: () => Promise<void>
+    close: () => Promise<void>
+    isMaximized: () => Promise<boolean>
+    onMaximized: (cb: (maximized: boolean) => void) => () => void
+  }
+  proxyCore: {
+    status: () => Promise<ProxyCoreStatus>
+    /** Persist settings + start/stop core */
+    apply: (req: ProxyCoreApplyRequest) => Promise<ProxyCoreStatus>
+    detail: () => Promise<ProxyCoreDetail>
+    setCallLogEnabled: (enabled: boolean) => Promise<ProxyCoreStatus>
+    clearCallLogs: () => Promise<{ ok: boolean; callLogs: ProxyCallLogEntry[] }>
+    clearBadNodes: () => Promise<{ ok: boolean }>
   }
 }

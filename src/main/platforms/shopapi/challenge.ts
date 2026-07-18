@@ -3,6 +3,28 @@
  * Legitimate JSON API bodies must never become NEED_BROWSER.
  * Shared across all shopApi-family sites.
  */
+
+/** ldxp/catfk shop SPA after load — must not be treated as WAF (false positive). */
+export function isShopStorefrontHtml(text: string): boolean {
+  const t = text ?? ''
+  // Visible storefront chrome (from live ldxp UI)
+  if (/商品列表|店铺公告|商品分类|卡密\s*\(|库存充足|库存少量|Powered by\s*链动/i.test(t)) {
+    return true
+  }
+  // Hydrated #app with substantial body (SPA shell alone is not enough)
+  if (/id=["']app["']/i.test(t) && t.length > 8000 && !isBareWafChallengeHtml(t)) {
+    return true
+  }
+  return false
+}
+
+/** Strict WAF markers only (avoid SPA globals like window._config_). */
+function isBareWafChallengeHtml(text: string): boolean {
+  return /acw_sc__v2|aliyun_waf|x5secdata|captcha-box|geetest|滑块验证|请完成安全验证|var\s+arg1\s*=\s*['"]/i.test(
+    text
+  )
+}
+
 export function isShopApiChallengeResponse(status: number, text: string): boolean {
   if (status === 403 || status === 405 || status === 429) {
     // 429 is rate limit; treat as NETWORK at higher layer
@@ -26,7 +48,8 @@ export function isShopApiChallengeResponse(status: number, text: string): boolea
   const looksHtml = /<!doctype html|<html[\s>]|<\/html>/i.test(trimmed)
   if (!looksHtml) return false
 
-  return /acw_sc__v2|aliyun_waf|x5secdata|window\._config_|var\s+arg1\s*=|captcha-box|geetest|滑块验证|安全验证|请完成验证/i.test(
-    trimmed
-  )
+  // Real shop UI beats WAF heuristics (products often contain 验证/接码)
+  if (isShopStorefrontHtml(trimmed)) return false
+
+  return isBareWafChallengeHtml(trimmed)
 }

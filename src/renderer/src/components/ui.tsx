@@ -11,7 +11,7 @@ export function Button({
   disabled,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'default' | 'primary' | 'ghost' | 'danger'
+  variant?: 'default' | 'primary' | 'ghost' | 'danger' | 'ok'
   size?: 'default' | 's'
   loading?: boolean
 }): React.JSX.Element {

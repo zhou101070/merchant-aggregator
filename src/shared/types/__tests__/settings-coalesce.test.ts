@@ -10,6 +10,32 @@ describe('coalesceAppSettings', () => {
     expect(r.recentSearches[0]).toBe('q0')
   })
 
+  it('coalesces blockOnShopSyncFail as boolean', () => {
+    expect(
+      coalesceAppSettings(DEFAULT_APP_SETTINGS, { blockOnShopSyncFail: true }).blockOnShopSyncFail
+    ).toBe(true)
+    expect(
+      coalesceAppSettings(DEFAULT_APP_SETTINGS, {
+        // @ts-expect-error intentional corrupt payload
+        blockOnShopSyncFail: 'true'
+      }).blockOnShopSyncFail
+    ).toBe(false)
+  })
+
+  it('keeps auto refresh opt-in and clamps its interval pair', () => {
+    const defaults = coalesceAppSettings(DEFAULT_APP_SETTINGS, null)
+    expect(defaults.autoRefreshEnabled).toBe(false)
+
+    const enabled = coalesceAppSettings(DEFAULT_APP_SETTINGS, {
+      autoRefreshEnabled: true,
+      autoRefreshMinIntervalMs: 20 * 60_000,
+      autoRefreshMaxIntervalMs: 5 * 60_000
+    })
+    expect(enabled.autoRefreshEnabled).toBe(true)
+    expect(enabled.autoRefreshMinIntervalMs).toBe(20 * 60_000)
+    expect(enabled.autoRefreshMaxIntervalMs).toBe(20 * 60_000)
+  })
+
   it('rejects non-boolean shopScrapeEnabled from dual keys', () => {
     const r = coalesceAppSettings(DEFAULT_APP_SETTINGS, {
       // @ts-expect-error intentional corrupt payload
@@ -90,5 +116,21 @@ describe('dualWriteSettingsPatch', () => {
     const long = Array.from({ length: 20 }, (_, i) => `q${i}`)
     const p = dualWriteSettingsPatch({ recentSearches: long })
     expect(p.recentSearches).toHaveLength(RECENT_SEARCHES_MAX)
+  })
+
+  it('dual-writes legacy proxySubscriptionUrl into a single-item list', () => {
+    const p = dualWriteSettingsPatch({
+      proxySubscriptionUrl: 'https://legacy.example/sub'
+    })
+    expect(p.proxySubscriptionUrl).toBe('https://legacy.example/sub')
+    expect(p.proxySubscriptions).toEqual([
+      { id: 'legacy', url: 'https://legacy.example/sub', name: '订阅 1', enabled: true }
+    ])
+  })
+
+  it('drops invalid legacy proxySubscriptionUrl schemes', () => {
+    const p = dualWriteSettingsPatch({ proxySubscriptionUrl: 'file:///tmp/x' })
+    expect(p.proxySubscriptions).toEqual([])
+    expect(p.proxySubscriptionUrl).toBe('')
   })
 })

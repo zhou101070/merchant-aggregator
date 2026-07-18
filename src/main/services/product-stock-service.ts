@@ -83,53 +83,57 @@ export class ProductStockService {
     const minIntervalMs = settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs
 
     const client = new ShopApiClient(profile, { minIntervalMs })
-    await client.warmup(token)
+    try {
+      await client.warmup(token)
 
-    const item = await this.findGoodsItem(client, {
-      token,
-      goodsKey,
-      title,
-      goodsType,
-      defaultTypes: [...profile.defaultGoodsTypes]
-    })
+      const item = await this.findGoodsItem(client, {
+        token,
+        goodsKey,
+        title,
+        goodsType,
+        defaultTypes: [...profile.defaultGoodsTypes]
+      })
 
-    if (!item) {
-      log.info('stock refresh miss', { productId, token, goodsKey })
-      return { status: 'not_found', productId }
-    }
+      if (!item) {
+        log.info('stock refresh miss', { productId, token, goodsKey })
+        return { status: 'not_found', productId }
+      }
 
-    const stock =
-      typeof item.extend?.stock_count === 'number' && Number.isFinite(item.extend.stock_count)
-        ? item.extend.stock_count
-        : null
+      const stock =
+        typeof item.extend?.stock_count === 'number' && Number.isFinite(item.extend.stock_count)
+          ? item.extend.stock_count
+          : null
 
-    if (typeof stock !== 'number' || stock <= 0) {
-      this.repos.shopProducts.deleteById(productId)
-      log.info('stock refresh removed oos', { productId, stock })
-      return { status: 'removed', productId, stock }
-    }
+      if (typeof stock !== 'number' || stock <= 0) {
+        this.repos.shopProducts.deleteById(productId)
+        log.info('stock refresh removed oos', { productId, stock })
+        return { status: 'removed', productId, stock }
+      }
 
-    const row = normalizeGoods(item, {
-      profile,
-      token,
-      merchantId: local.merchantId,
-      shopName: local.shopName,
-      goodsType: item.goods_type || goodsType || profile.defaultGoodsTypes[0] || 'card',
-      fetchedAt: new Date().toISOString()
-    })
-    if (!row) {
-      this.repos.shopProducts.deleteById(productId)
-      return { status: 'removed', productId, stock }
-    }
+      const row = normalizeGoods(item, {
+        profile,
+        token,
+        merchantId: local.merchantId,
+        shopName: local.shopName,
+        goodsType: item.goods_type || goodsType || profile.defaultGoodsTypes[0] || 'card',
+        fetchedAt: new Date().toISOString()
+      })
+      if (!row) {
+        this.repos.shopProducts.deleteById(productId)
+        return { status: 'removed', productId, stock }
+      }
 
-    this.repos.shopProducts.upsertMany([row])
-    const product = this.repos.shopProducts.getById(row.id)
-    log.info('stock refresh updated', { productId: row.id, stock })
-    return {
-      status: 'updated',
-      productId: row.id,
-      stock,
-      product: product as ShopProduct
+      this.repos.shopProducts.upsertMany([row])
+      const product = this.repos.shopProducts.getById(row.id)
+      log.info('stock refresh updated', { productId: row.id, stock })
+      return {
+        status: 'updated',
+        productId: row.id,
+        stock,
+        product: product as ShopProduct
+      }
+    } finally {
+      await client.dispose()
     }
   }
 

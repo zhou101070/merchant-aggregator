@@ -2,8 +2,8 @@ import { SHOP_PROFILES } from '../platforms/shop-profiles'
 import type { ShopSiteProfile } from '../platforms/shop-types'
 import { findProfileByHost, shopRootUrl } from '../platforms/shop-types'
 
-const SHOP_PATH = /\/shop\/([A-Za-z0-9]+)/i
-const ITEM_PATH = /\/item\/([A-Za-z0-9]+)/i
+const SHOP_PATH = /\/shop\/([A-Za-z0-9_.-]+)/i
+const ITEM_PATH = /\/item\/([A-Za-z0-9_.-]+)/i
 
 export interface ParsedShopUrl {
   platformId: string

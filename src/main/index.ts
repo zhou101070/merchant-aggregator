@@ -14,15 +14,28 @@ import {
 import { registerIpcHandlers } from './ipc/register'
 import { SyncOrchestrator } from './services/sync-orchestrator'
 import { SearchService } from './services/search-service'
+import {
+  initProxyCoreService,
+  getProxyCoreService,
+  type ProxyCoreService
+} from './services/proxy-core-service'
+import {
+  initAutoRefreshScheduler,
+  getAutoRefreshScheduler,
+  type AutoRefreshScheduler
+} from './services/auto-refresh-scheduler'
 import { createLogger } from './utils/logger'
 import { ensureSystemProxy } from './utils/main-fetch'
 import { evaluateOpenExternal } from './utils/url-safety'
 import { applyThemeSource } from './theme'
-import {
-  TITLEBAR_OVERLAY_HEIGHT,
-  applyWindowChrome,
-  baseThemeChrome
-} from './window-chrome'
+import { applyWindowChrome, baseThemeChrome } from './window-chrome'
+import { IPC_CHANNELS } from '@shared/types/ipc'
+
+// Quiet Chromium net/ssl handshake spam (e.g. net_error -100) on stderr.
+// Set MA_CHROMIUM_VERBOSE=1 to keep full Chromium logs for debugging.
+if (!process.env['MA_CHROMIUM_VERBOSE']) {
+  app.commandLine.appendSwitch('log-level', '3')
+}
 
 const log = createLogger('main')
 
@@ -30,6 +43,8 @@ let db: Database.Database | null = null
 let repos: Repositories | null = null
 let sync: SyncOrchestrator | null = null
 let search: SearchService | null = null
+let proxyCore: ProxyCoreService | null = null
+let autoRefresh: AutoRefreshScheduler | null = null
 
 /**
  * 设计审查截图钩子(dev 工具),逐路由截图后自动退出:
@@ -111,18 +126,11 @@ function createWindow(): void {
     backgroundColor: chrome.background,
     // Win/Linux 任务栏与窗口图标；macOS 窗口忽略此项，已用 dock.setIcon
     ...(appIcon && process.platform !== 'darwin' ? { icon: appIcon } : {}),
-    // mac: 红绿灯嵌内容区; Win: 隐藏系统标题栏 + 主题色 WCO,与内容一体
+    // mac: 红绿灯嵌内容区; Win: 隐藏系统标题栏，窗控由渲染层自绘（弹窗可盖住）
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const }
       : process.platform === 'win32'
-        ? {
-            titleBarStyle: 'hidden' as const,
-            titleBarOverlay: {
-              color: chrome.background,
-              symbolColor: chrome.symbol,
-              height: TITLEBAR_OVERLAY_HEIGHT
-            }
-          }
+        ? { titleBarStyle: 'hidden' as const }
         : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -133,6 +141,16 @@ function createWindow(): void {
   })
 
   nativeTheme.on('updated', () => applyWindowChrome(mainWindow))
+
+  // Win 自绘窗控：最大化状态推给渲染层
+  if (process.platform === 'win32') {
+    const pushMaximized = (): void => {
+      if (mainWindow.isDestroyed()) return
+      mainWindow.webContents.send(IPC_CHANNELS.windowMaximized, mainWindow.isMaximized())
+    }
+    mainWindow.on('maximize', pushMaximized)
+    mainWindow.on('unmaximize', pushMaximized)
+  }
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -167,7 +185,9 @@ function initDatabase(): void {
   repos = createRepositories(db)
   sync = new SyncOrchestrator(repos)
   search = new SearchService(db)
-  registerIpcHandlers({ repos, sync, search })
+  proxyCore = initProxyCoreService(app.getPath('userData'))
+  autoRefresh = initAutoRefreshScheduler(repos, sync)
+  registerIpcHandlers({ repos, sync, search, proxyCore, autoRefresh })
   log.info('database ready', {
     filePath: opened.filePath,
     schemaVersion: opened.schemaVersion,
@@ -199,6 +219,20 @@ app.whenReady().then(() => {
   applyThemeSource(repos!.settings.get().theme)
 
   void ensureSystemProxy()
+
+  // Auto-start embedded proxy if user enabled it
+  const s = repos!.settings.get()
+  if (s.proxyCoreEnabled && s.proxySubscriptions.some((x) => x.enabled && x.url.trim())) {
+    void proxyCore!.apply({
+      enabled: true,
+      subscriptions: s.proxySubscriptions,
+      callLogEnabled: s.proxyCallLogEnabled
+    })
+  }
+
+  // Background per-platform random shop refresh (runs for whole app lifetime)
+  autoRefresh!.start()
+
   createWindow()
 
   app.on('activate', function () {
@@ -213,9 +247,13 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  getAutoRefreshScheduler()?.stop()
+  void getProxyCoreService()?.stop()
   closeDatabase(db)
   db = null
   repos = null
   sync = null
   search = null
+  proxyCore = null
+  autoRefresh = null
 })

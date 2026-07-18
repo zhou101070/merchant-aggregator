@@ -9,6 +9,12 @@ describe('DEFAULT_APP_SETTINGS', () => {
     expect(DEFAULT_APP_SETTINGS.requestIntervalMs).toBe(500)
     expect(DEFAULT_APP_SETTINGS.shopPageConcurrency).toBe(3)
     expect(DEFAULT_APP_SETTINGS.theme).toBe('system')
+    expect(DEFAULT_APP_SETTINGS.proxyCoreEnabled).toBe(false)
+    expect(DEFAULT_APP_SETTINGS.proxySubscriptionUrl).toBe('')
+    expect(DEFAULT_APP_SETTINGS.proxySubscriptions).toEqual([])
+    expect(DEFAULT_APP_SETTINGS.proxyCallLogEnabled).toBe(false)
+    expect(DEFAULT_APP_SETTINGS.blockOnShopSyncFail).toBe(false)
+    expect(DEFAULT_APP_SETTINGS.autoRefreshEnabled).toBe(false)
   })
 })
 
@@ -16,13 +22,14 @@ describe('IPC_CHANNELS', () => {
   it('uses namespaced channel strings', () => {
     expect(IPC_CHANNELS.searchQuery).toBe('search:query')
     expect(IPC_CHANNELS.syncProgress).toBe('sync:progress')
+    expect(IPC_CHANNELS.syncRequestLog).toBe('sync:requestLog')
     expect(IPC_CHANNELS.shellOpenExternal).toBe('shell:openExternal')
   })
 })
 
 describe('schema / search defaults', () => {
   it('schema version is current', () => {
-    expect(DB_SCHEMA_VERSION).toBe(10)
+    expect(DB_SCHEMA_VERSION).toBe(11)
   })
 
   it('defaults search page size to 50', () => {

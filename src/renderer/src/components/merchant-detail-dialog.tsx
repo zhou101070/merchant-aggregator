@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Merchant } from '@shared/types/merchant'
 import type { ShopProduct } from '@shared/types/product'
-import { Badge, Button, Chip, Empty, IconButton, Price } from './ui'
-import { FilterBar, PanelHeader } from './layout'
+import { Badge, Button, Chip, Empty, IconButton, Input, Price } from './ui'
+import { FilterBar } from './layout'
 import { HealthStatus } from './health-status'
-import { ModalDialog } from './modal-dialog'
+import { ModalDialog, ModalDialogTitle } from './modal-dialog'
 import { useModalDismiss } from './use-modal-dismiss'
 import { Icon } from './icons'
 import { useToast } from './use-toast'
@@ -14,6 +14,7 @@ import { openExternalSafe } from '../lib/open-external'
 import { merchantStoreUrl } from '../lib/shop-url'
 import { resolveShopIdentity, resolveShopRef } from '../lib/shop-ref'
 import { timeAgo } from '../lib/format-time'
+import { filterAndRankShopProducts } from '@shared/lib/shop-product-match'
 
 function productGroupLabel(t: string): string {
   switch (t) {
@@ -46,8 +47,8 @@ export function MerchantDetailDialog({
   onClose,
   onSyncShop,
   onFavorite,
-  onBlock,
-  onRefreshStock
+  onRefreshStock,
+  onBlockStateChange
 }: {
   merchant: Merchant
   shopProducts: ShopProduct[]
@@ -56,8 +57,8 @@ export function MerchantDetailDialog({
   onClose: () => void
   onSyncShop: (m: Merchant) => void
   onFavorite: (m: Merchant) => void
-  onBlock: (m: Merchant) => void
   onRefreshStock: (p: ShopProduct) => void
+  onBlockStateChange?: (blocked: boolean) => void
 }): React.JSX.Element {
   return (
     <ModalDialog
@@ -72,8 +73,8 @@ export function MerchantDetailDialog({
         refreshingStockId={refreshingStockId}
         onSyncShop={onSyncShop}
         onFavorite={onFavorite}
-        onBlock={onBlock}
         onRefreshStock={onRefreshStock}
+        onBlockStateChange={onBlockStateChange}
       />
     </ModalDialog>
   )
@@ -86,8 +87,8 @@ function MerchantDetailBody({
   refreshingStockId,
   onSyncShop,
   onFavorite,
-  onBlock,
-  onRefreshStock
+  onRefreshStock,
+  onBlockStateChange
 }: {
   merchant: Merchant
   shopProducts: ShopProduct[]
@@ -95,17 +96,58 @@ function MerchantDetailBody({
   refreshingStockId: string | null
   onSyncShop: (m: Merchant) => void
   onFavorite: (m: Merchant) => void
-  onBlock: (m: Merchant) => void
   onRefreshStock: (p: ShopProduct) => void
+  onBlockStateChange?: (blocked: boolean) => void
 }): React.JSX.Element {
   const dismiss = useModalDismiss()
+  const toast = useToast()
   const identity = resolveShopIdentity(merchant)
+  const [blocked, setBlocked] = useState(false)
+  const [blockBusy, setBlockBusy] = useState(false)
   const [groupFilter, setGroupFilter] = useState<string>('all')
+  const [productQ, setProductQ] = useState('')
   const groupFilterKey = merchant.id
   const [seenMerchantId, setSeenMerchantId] = useState(groupFilterKey)
   if (groupFilterKey !== seenMerchantId) {
     setSeenMerchantId(groupFilterKey)
     setGroupFilter('all')
+    setProductQ('')
+    setBlocked(false)
+  }
+
+  useEffect(() => {
+    let alive = true
+    void window.api.blocklist.list().then((rows) => {
+      if (!alive) return
+      setBlocked(rows.some((r) => r.targetType === 'merchant' && r.targetId === merchant.id))
+    })
+    return () => {
+      alive = false
+    }
+  }, [merchant.id])
+
+  async function toggleBlock(): Promise<void> {
+    if (blockBusy) return
+    setBlockBusy(true)
+    try {
+      if (blocked) {
+        await window.api.blocklist.remove({ targetType: 'merchant', targetId: merchant.id })
+        setBlocked(false)
+        onBlockStateChange?.(false)
+        toast(`已解除屏蔽：${merchant.name}`, 'ok')
+      } else {
+        await window.api.blocklist.add({
+          targetType: 'merchant',
+          targetId: merchant.id,
+          titleSnapshot: merchant.name
+        })
+        setBlocked(true)
+        onBlockStateChange?.(true)
+        toast(`已屏蔽商家：${merchant.name}（列表与搜索不再显示）`, 'ok')
+      }
+    } finally {
+      setBlockBusy(false)
+    }
   }
 
   const productGroups = useMemo(() => {
@@ -129,26 +171,31 @@ function MerchantDetailBody({
   }, [shopProducts])
 
   const filteredProducts = useMemo(() => {
-    if (groupFilter === 'all') return shopProducts
+    let rows = shopProducts
     if (groupFilter === '__none__') {
-      return shopProducts.filter((p) => !productGroupKey(p))
+      rows = rows.filter((p) => !productGroupKey(p))
+    } else if (groupFilter !== 'all') {
+      rows = rows.filter((p) => productGroupKey(p) === groupFilter)
     }
-    return shopProducts.filter((p) => productGroupKey(p) === groupFilter)
-  }, [shopProducts, groupFilter])
+    if (productQ.trim()) {
+      rows = filterAndRankShopProducts(rows, productQ)
+    }
+    return rows
+  }, [shopProducts, groupFilter, productQ])
 
   return (
-    <div className="dialog-body">
+    <>
       <div className="dialog-head">
         <div style={{ minWidth: 0, flex: 1 }}>
-          <h2 className="dialog-title" title={merchant.name}>
+          <ModalDialogTitle className="dialog-title" title={merchant.name}>
             {merchant.name}
-          </h2>
+          </ModalDialogTitle>
         </div>
         <IconButton label="关闭" autoFocus onClick={() => dismiss()}>
           <Icon name="close" />
         </IconButton>
       </div>
-
+      <div className="dialog-body">
       <div className="row" style={{ marginBottom: 8 }}>
         <HealthStatus health={merchant.healthStatus} prefix="同步：" />
         <Badge tone={identity.scrapable ? 'ok' : 'default'}>{identity.label}</Badge>
@@ -163,7 +210,7 @@ function MerchantDetailBody({
         </div>
       ) : null}
 
-      <div className="row" style={{ marginBottom: 12 }}>
+      <div className="row merchant-detail-actions" style={{ marginBottom: 12 }}>
         <Button
           variant="primary"
           onClick={() => void openExternalSafe(merchantStoreUrl(merchant))}
@@ -182,11 +229,17 @@ function MerchantDetailBody({
           收藏
         </Button>
         <Button
-          variant="ghost"
-          onClick={() => onBlock(merchant)}
-          title="屏蔽后搜索不再显示该店商品"
+          className="merchant-detail-block"
+          variant={blocked ? 'ok' : 'danger'}
+          disabled={blockBusy}
+          onClick={() => void toggleBlock()}
+          title={
+            blocked
+              ? '解除屏蔽后，搜索将重新显示该店商品'
+              : '屏蔽后搜索不再显示该店商品'
+          }
         >
-          屏蔽
+          {blocked ? '取消屏蔽' : '屏蔽商家'}
         </Button>
       </div>
       {!identity.scrapable ? (
@@ -196,17 +249,16 @@ function MerchantDetailBody({
       ) : null}
 
       <div className="merchant-dialog-products">
-        <PanelHeader
-          title="店内商品"
-          sub={
-            shopProducts.length
-              ? groupFilter === 'all'
-                ? `${shopProducts.length} 条`
-                : `${filteredProducts.length}/${shopProducts.length} 条`
-              : ''
-          }
-          style={{ padding: '0 0 8px' }}
-        />
+        <div className="merchant-products-title">
+          <strong>店内商品</strong>
+          {shopProducts.length ? (
+            <span className="sub">
+              {productQ.trim() || groupFilter !== 'all'
+                ? `${filteredProducts.length}/${shopProducts.length} 条`
+                : `${shopProducts.length} 条`}
+            </span>
+          ) : null}
+        </div>
         {shopProducts.length && productGroups.length > 0 ? (
           <FilterBar label="分组" style={{ padding: '0 0 10px' }}>
             <Chip on={groupFilter === 'all'} onClick={() => setGroupFilter('all')}>
@@ -221,6 +273,18 @@ function MerchantDetailBody({
             ))}
           </FilterBar>
         ) : null}
+        {shopProducts.length ? (
+          <div className="merchant-product-search">
+            <Icon name="search" size={14} />
+            <Input
+              className="merchant-product-search-input"
+              placeholder="搜商品名 / 分组"
+              value={productQ}
+              onChange={(e) => setProductQ(e.target.value)}
+              aria-label="搜索店内商品"
+            />
+          </div>
+        ) : null}
         {!shopProducts.length ? (
           <Empty title="该店尚未同步商品">
             {identity.scrapable
@@ -228,7 +292,11 @@ function MerchantDetailBody({
               : '该店不支持同步店内价。'}
           </Empty>
         ) : !filteredProducts.length ? (
-          <Empty title="该分组下无商品">换一个分组，或选「全部商品」。</Empty>
+          <Empty title={productQ.trim() ? '没有匹配的商品' : '该分组下无商品'}>
+            {productQ.trim()
+              ? '试试换个关键词，或清空搜索。'
+              : '换一个分组，或选「全部商品」。'}
+          </Empty>
         ) : (
           <div className="merchant-dialog-table-wrap">
             <table className="table detail-products">
@@ -277,7 +345,8 @@ function MerchantDetailBody({
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </>
   )
 }
 
@@ -288,23 +357,25 @@ export function MerchantDetailById({
 }: {
   merchantId: string
   onClose: () => void
-}): React.JSX.Element | null {
+}): React.JSX.Element {
   const toast = useToast()
   const { busy, start, status, progress } = useSyncStatus()
   const { refreshingStockId, refreshStock } = useRefreshStock()
   const [merchant, setMerchant] = useState<Merchant | null>(null)
   const [shopProducts, setShopProducts] = useState<ShopProduct[]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
   const onCloseRef = useRef(onClose)
   useEffect(() => {
     onCloseRef.current = onClose
   }, [onClose])
 
   const reload = useCallback(async () => {
+    setLoadError(null)
     const m = await window.api.merchants.get(merchantId)
     if (!m) {
       setMerchant(null)
+      setLoadError('未找到该商家')
       toast('未找到该商家', 'fail')
-      onCloseRef.current()
       return
     }
     setMerchant(m)
@@ -328,7 +399,30 @@ export function MerchantDetailById({
     }
   }, [reload, status?.counts.shopProducts, progress?.status])
 
-  if (!merchant) return null
+  // 加载中 / 失败也先挂弹层，避免「点了没反应」
+  if (!merchant) {
+    return (
+      <ModalDialog openKey={`loading-${merchantId}`} className="dialog dialog-wide" onClose={onClose}>
+        <div className="dialog-head">
+          <ModalDialogTitle className="dialog-title">商家详情</ModalDialogTitle>
+          <IconButton label="关闭" onClick={onClose}>
+            <Icon name="close" />
+          </IconButton>
+        </div>
+        <div className="dialog-body">
+          {loadError ? (
+            <p className="small warn-text" style={{ margin: '12px 0' }}>
+              {loadError}
+            </p>
+          ) : (
+            <p className="muted" style={{ margin: '12px 0' }}>
+              加载中…
+            </p>
+          )}
+        </div>
+      </ModalDialog>
+    )
+  }
 
   return (
     <MerchantDetailDialog
@@ -351,14 +445,6 @@ export function MerchantDetailById({
         void window.api.favorites
           .add({ targetType: 'merchant', targetId: m.id })
           .then(() => toast(`已收藏商家：${m.name}`, 'ok'))
-      }}
-      onBlock={(m) => {
-        void window.api.blocklist
-          .add({ targetType: 'merchant', targetId: m.id, titleSnapshot: m.name })
-          .then(() => {
-            toast(`已屏蔽商家：${m.name}（搜索不再显示）`, 'ok')
-            onClose()
-          })
       }}
       onRefreshStock={(p) =>
         void refreshStock(p.id, {

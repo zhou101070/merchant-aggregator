@@ -2,7 +2,13 @@ import type Database from 'better-sqlite3'
 import { DB_SCHEMA_VERSION } from '@shared/constants'
 import { productTitleSearchFields } from '@shared/lib/search-query'
 import { createLogger } from '../utils/logger'
-import { SCHEMA_V1_SQL, SCHEMA_V2_SQL, SCHEMA_V6_SQL, SCHEMA_V7_SQL } from './schema.sql'
+import {
+  SCHEMA_V1_SQL,
+  SCHEMA_V2_SQL,
+  SCHEMA_V6_SQL,
+  SCHEMA_V7_SQL,
+  SCHEMA_V11_SQL
+} from './schema.sql'
 
 const log = createLogger('db:migrate')
 
@@ -215,6 +221,13 @@ export function migrate(db: Database.Database): { from: number; to: number } {
     `)
     recordMigration(db, 10)
     version = 10
+  }
+
+  if (version < 11) {
+    log.info('applying schema v11 (platform_bad_nodes)')
+    db.exec(SCHEMA_V11_SQL)
+    recordMigration(db, 11)
+    version = 11
   }
 
   if (version !== from) {

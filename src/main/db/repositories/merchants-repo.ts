@@ -60,9 +60,16 @@ function freshCutoff(freshHours: number): string {
 /** Scrapable = shop_platform + shop_token present (PR2 forced). */
 const SCRAPABLE_SQL = `(shop_token IS NOT NULL AND shop_token != '' AND shop_platform IS NOT NULL AND shop_platform != '')`
 
+/** 屏蔽商家不进列表 / 候选 / 同步池（搜索另有独立过滤） */
+const NOT_BLOCKED_SQL = `NOT EXISTS (
+  SELECT 1 FROM blocked_targets b
+  WHERE b.target_type = 'merchant' AND b.target_id = merchants.id
+)`
+
 /** 新鲜 = 最近一次刮取成功且在新鲜期内 */
 const NEEDS_SYNC_SQL = `
   ${SCRAPABLE_SQL}
+  AND ${NOT_BLOCKED_SQL}
   AND NOT (COALESCE(app_health_status, '') = 'healthy' AND COALESCE(app_health_at, '') >= @cutoff)`
 
 /** Derive UI health from local scrape state (app-side). Requires shop_platform + shop_token. */
@@ -220,13 +227,23 @@ export class MerchantsRepo {
     status: 'healthy' | 'failing' | 'retrying' | 'never',
     message?: string | null
   ): void {
+    if (status === 'healthy') {
+      this.db
+        .prepare(
+          `UPDATE merchants
+           SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+           WHERE id = ?`
+        )
+        .run(status, new Date().toISOString(), message ?? null, merchantId)
+      return
+    }
     this.db
       .prepare(
         `UPDATE merchants
-         SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+         SET app_health_status = ?, app_health_message = ?
          WHERE id = ?`
       )
-      .run(status, new Date().toISOString(), message ?? null, merchantId)
+      .run(status, message ?? null, merchantId)
   }
 
   setAppHealthByShopRef(
@@ -235,13 +252,23 @@ export class MerchantsRepo {
     status: 'healthy' | 'failing' | 'retrying' | 'never',
     message?: string | null
   ): void {
+    if (status === 'healthy') {
+      this.db
+        .prepare(
+          `UPDATE merchants
+           SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+           WHERE shop_platform = ? AND shop_token = ?`
+        )
+        .run(status, new Date().toISOString(), message ?? null, platform, token)
+      return
+    }
     this.db
       .prepare(
         `UPDATE merchants
-         SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+         SET app_health_status = ?, app_health_message = ?
          WHERE shop_platform = ? AND shop_token = ?`
       )
-      .run(status, new Date().toISOString(), message ?? null, platform, token)
+      .run(status, message ?? null, platform, token)
   }
 
   /** Write confirmed host-token shop ref after fingerprint probe. */
@@ -328,7 +355,7 @@ export class MerchantsRepo {
         .prepare(
           `SELECT id, name, shop_platform AS shopPlatform, shop_token AS shopToken
            FROM merchants
-           WHERE ${SCRAPABLE_SQL}
+           WHERE ${SCRAPABLE_SQL} AND ${NOT_BLOCKED_SQL}
            ORDER BY name ASC`
         )
         .all() as { id: string; name: string; shopPlatform: string; shopToken: string }[]
@@ -340,17 +367,32 @@ export class MerchantsRepo {
 
   countScrapable(): number {
     return (
-      this.db.prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${SCRAPABLE_SQL}`).get() as {
+      this.db
+        .prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${SCRAPABLE_SQL} AND ${NOT_BLOCKED_SQL}`)
+        .get() as {
         c: number
       }
     ).c
   }
 
   count(): number {
-    const row = this.db.prepare(`SELECT COUNT(*) AS c FROM merchants`).get() as {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${NOT_BLOCKED_SQL}`)
+      .get() as {
       c: number
     }
     return row.c
+  }
+
+  isMerchantBlocked(id: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS ok FROM blocked_targets
+         WHERE target_type = 'merchant' AND target_id = ?
+         LIMIT 1`
+      )
+      .get(id) as { ok: number } | undefined
+    return !!row
   }
 
   getById(id: string): Merchant | null {
@@ -365,6 +407,10 @@ export class MerchantsRepo {
     limit?: number
     /** Only these platform ids (e.g. enabled profiles) */
     platformIds?: string[]
+    /**
+     * 后台自动刷新：排除已失败店，避免反复抽到；用户主动同步成功(healthy)后才重新入池。
+     */
+    excludeFailing?: boolean
   }): ScrapableMerchant[] {
     const limitSql = opts.limit ? `LIMIT ${Math.max(1, Math.floor(opts.limit))}` : ''
     const params: Record<string, unknown> = { cutoff: freshCutoff(opts.freshHours) }
@@ -377,11 +423,14 @@ export class MerchantsRepo {
       })
       platformFilter = ` AND shop_platform IN (${keys.join(',')})`
     }
+    const failingFilter = opts.excludeFailing
+      ? ` AND COALESCE(app_health_status, '') != 'failing'`
+      : ''
     return (
       this.db
         .prepare(
           `SELECT id, name, shop_platform AS shopPlatform, shop_token AS shopToken FROM merchants
-           WHERE ${NEEDS_SYNC_SQL}${platformFilter}
+           WHERE ${NEEDS_SYNC_SQL}${platformFilter}${failingFilter}
            ORDER BY offer_count DESC
            ${limitSql}`
         )
@@ -409,7 +458,7 @@ export class MerchantsRepo {
         OR product_types_json LIKE ${f} ESCAPE '\\' OR representative_product LIKE ${f} ESCAPE '\\'
         OR representative_offer_title LIKE ${f} ESCAPE '\\')`
     })
-    const matchSql = `${SCRAPABLE_SQL} AND (${tokenClauses.join(' OR ')})`
+    const matchSql = `${SCRAPABLE_SQL} AND ${NOT_BLOCKED_SQL} AND (${tokenClauses.join(' OR ')})`
 
     const totalMatching = (
       this.db.prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${matchSql}`).get(params) as {
@@ -470,7 +519,7 @@ export class MerchantsRepo {
   }
 
   list(query: MerchantListQuery): { rows: Merchant[]; total: number } {
-    const where: string[] = []
+    const where: string[] = [NOT_BLOCKED_SQL]
     const params: Record<string, unknown> = {}
 
     if (query.q?.trim()) {

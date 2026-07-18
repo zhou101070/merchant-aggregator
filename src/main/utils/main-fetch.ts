@@ -1,6 +1,12 @@
+import { sleep } from '../services/rate-limiter'
+import { beginSyncHttpRequest, endSyncHttpRequest } from '../services/sync-request-log'
 import { createLogger } from './logger'
 
 const log = createLogger('main-fetch')
+
+/** Extra attempts after first failure for transient TLS/socket drops. */
+const TRANSIENT_FETCH_RETRIES = 2
+const TRANSIENT_BACKOFF_MS = [200, 500] as const
 
 type ElectronSession = {
   fetch?: (input: string, init?: RequestInit) => Promise<Response>
@@ -18,8 +24,26 @@ type ElectronNet = {
 
 let proxyInit: Promise<void> | null = null
 
+/** Set by ProxyCoreService when embedded mihomo is running (takes precedence over env). */
+let runtimeProxyUrl: string | null = null
+
+export function setRuntimeProxyUrl(url: string | null): void {
+  runtimeProxyUrl = url?.trim() || null
+  // force re-apply Chromium session proxy on next ensure
+  proxyInit = null
+  log.info('runtime proxy', { url: runtimeProxyUrl ? 'set' : 'cleared' })
+  // Apply eagerly: shop-tab page fetch never goes through mainFetch, so a lazy
+  // re-apply would leave defaultSession on the old proxy (traffic bypasses the core).
+  void ensureSystemProxy()
+}
+
+export function getRuntimeProxyUrl(): string | null {
+  return runtimeProxyUrl
+}
+
 function envProxyRules(): string | null {
   const raw =
+    runtimeProxyUrl ||
     process.env['MA_PROXY'] ||
     process.env['HTTPS_PROXY'] ||
     process.env['https_proxy'] ||
@@ -73,7 +97,7 @@ async function electronFetchers(): Promise<{
       return {
         fetch: (input, init) => ses.fetch!(input, init),
         resolveProxy: ses.resolveProxy ? (u) => ses.resolveProxy!(u) : null,
-        setProxy: ses.setProxy ?? null,
+        setProxy: ses.setProxy ? (cfg) => ses.setProxy!(cfg) : null,
         via: 'session.fetch'
       }
     }
@@ -82,7 +106,7 @@ async function electronFetchers(): Promise<{
       return {
         fetch: (input, init) => net.fetch(input, init),
         resolveProxy: ses?.resolveProxy ? (u) => ses.resolveProxy!(u) : null,
-        setProxy: ses?.setProxy ?? null,
+        setProxy: ses?.setProxy ? (cfg) => ses.setProxy!(cfg) : null,
         via: 'net.fetch'
       }
     }
@@ -192,30 +216,108 @@ function withAbortSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<
 }
 
 /**
+ * True for short-lived socket/TLS drops worth a quick retry
+ * (e.g. Chromium net_error -100 CONNECTION_CLOSED during SSL handshake).
+ */
+export function isTransientNetworkError(err: unknown): boolean {
+  if (err instanceof Error && err.name === 'AbortError') return false
+  const details = fetchErrorDetails(err)
+  const blob = [
+    String(err),
+    String(details.error ?? ''),
+    String(details.causeCode ?? ''),
+    String(details.causeMessage ?? ''),
+    String(details.errno ?? '')
+  ]
+    .join(' ')
+    .toLowerCase()
+  return /err_connection_closed|err_connection_reset|err_connection_refused|err_connection_timed_out|err_connection_aborted|err_ssl|err_network_changed|err_empty_response|err_timed_out|err_internet_disconnected|err_address_unreachable|handshake failed|net_error\s*-100|net_error\s*-101|net_error\s*-102|net_error\s*-106|net_error\s*-107|net_error\s*-118|net_error\s*-21|econnreset|econnrefused|etimedout|eai_again|socket hang up|ssl_error|tls/i.test(
+    blob
+  )
+}
+
+async function withTransientRetries<T>(
+  label: string,
+  fn: () => Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  let last: unknown
+  for (let attempt = 0; attempt <= TRANSIENT_FETCH_RETRIES; attempt++) {
+    if (signal?.aborted) throw abortError()
+    try {
+      return await fn()
+    } catch (err) {
+      last = err
+      if (err instanceof Error && err.name === 'AbortError') throw err
+      if (!isTransientNetworkError(err) || attempt >= TRANSIENT_FETCH_RETRIES) throw err
+      const delay = TRANSIENT_BACKOFF_MS[attempt] ?? 500
+      log.info('transient fetch retry', {
+        label,
+        attempt: attempt + 1,
+        delay,
+        err: String(err)
+      })
+      try {
+        await sleep(delay, signal)
+      } catch (sleepErr) {
+        if (sleepErr instanceof Error && sleepErr.name === 'AbortError') throw abortError()
+        throw sleepErr
+      }
+    }
+  }
+  throw last
+}
+
+/**
  * Main-process HTTP via Chromium network (system/fixed proxy).
  * Does not fall back to bare Node fetch after a Chromium failure (that hits fake-ip).
  */
 export async function mainFetch(input: string | URL, init?: RequestInit): Promise<Response> {
   await ensureSystemProxy()
   const url = String(input)
+  const method = (init?.method || 'GET').toUpperCase()
+  const logId = beginSyncHttpRequest({ method, url })
+  try {
+    const res = await mainFetchInner(url, init)
+    endSyncHttpRequest(logId, { status: res.status })
+    return res
+  } catch (err) {
+    endSyncHttpRequest(logId, {
+      status: null,
+      error: err instanceof Error ? err.message : String(err)
+    })
+    throw err
+  }
+}
+
+async function mainFetchInner(url: string, init?: RequestInit): Promise<Response> {
   const { fetch: eFetch, resolveProxy, setProxy, via } = await electronFetchers()
 
   if (!eFetch) {
     const fixed = envProxyRules()
     if (fixed) {
       try {
-        return await fetchViaUndiciProxy(url, init, fixed)
+        return await withTransientRetries(
+          'undici-proxy',
+          () => fetchViaUndiciProxy(url, init, fixed),
+          init?.signal ?? undefined
+        )
       } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') throw err
         throw wrapFetchError(err, { via: 'undici-proxy', url, proxy: fixed })
       }
     }
-    return fetch(url, init)
+    return withTransientRetries('node-fetch', () => fetch(url, init), init?.signal ?? undefined)
   }
 
   const { electronInit, signal } = splitElectronInit(init)
 
   try {
-    return await withAbortSignal(eFetch(url, electronInit), signal)
+    return await withTransientRetries(
+      via,
+      () => withAbortSignal(eFetch(url, electronInit), signal),
+      signal
+    )
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') throw err
 
@@ -229,12 +331,16 @@ export async function mainFetch(input: string | URL, init?: RequestInit): Promis
     const fromEnv = envProxyRules()
     const proxyHost = fromResolve || fromEnv
 
-    // Retry 1: pin Chromium to explicit proxy host
+    // Recovery 1: pin Chromium to explicit proxy host
     if (proxyHost && setProxy) {
       try {
         await setProxy({ mode: 'fixed_servers', proxyRules: proxyHost })
         log.info('retry chromium with fixed_servers', { proxyHost, resolved })
-        const res = await withAbortSignal(eFetch(url, electronInit), signal)
+        const res = await withTransientRetries(
+          'chromium-fixed',
+          () => withAbortSignal(eFetch(url, electronInit), signal),
+          signal
+        )
         try {
           await setProxy({ mode: fromEnv ? 'fixed_servers' : 'system', proxyRules: fromEnv || undefined })
         } catch {
@@ -247,10 +353,14 @@ export async function mainFetch(input: string | URL, init?: RequestInit): Promis
       }
     }
 
-    // Retry 2: undici ProxyAgent (works when Chromium proxy mis-applies)
+    // Recovery 2: undici ProxyAgent (works when Chromium proxy mis-applies)
     if (proxyHost) {
       try {
-        return await withAbortSignal(fetchViaUndiciProxy(url, init, proxyHost), signal)
+        return await withTransientRetries(
+          'undici-proxy',
+          () => withAbortSignal(fetchViaUndiciProxy(url, init, proxyHost), signal),
+          signal
+        )
       } catch (err3) {
         if (err3 instanceof Error && err3.name === 'AbortError') throw err3
         log.warn('undici proxy retry failed', fetchErrorDetails(err3))

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isShopJob, normalizeJobType } from '../sync'
+import { isProductSyncActivity, isShopJob, normalizeJobType } from '../sync'
 
 describe('normalizeJobType', () => {
   it('maps legacy aliases to canonical', () => {
@@ -31,5 +31,26 @@ describe('isShopJob', () => {
     expect(isShopJob('merchants')).toBe(false)
     expect(isShopJob('bootstrap')).toBe(false)
     expect(isShopJob('nope')).toBe(false)
+  })
+})
+
+describe('isProductSyncActivity', () => {
+  it('is true for shop jobs regardless of phase', () => {
+    expect(isProductSyncActivity('shop_one', 'starting')).toBe(true)
+    expect(isProductSyncActivity('ldxp_all', 'merchants')).toBe(true)
+    expect(isProductSyncActivity('shop_selected', 'goods:1:p2')).toBe(true)
+  })
+
+  it('bootstrap only after shop phase starts', () => {
+    expect(isProductSyncActivity('bootstrap', 'starting')).toBe(false)
+    expect(isProductSyncActivity('bootstrap', 'merchants')).toBe(false)
+    expect(isProductSyncActivity('bootstrap', 'fingerprint')).toBe(false)
+    expect(isProductSyncActivity('bootstrap', 'shop')).toBe(true)
+    expect(isProductSyncActivity('bootstrap', 'info')).toBe(true)
+    expect(isProductSyncActivity('bootstrap', 'goods:x:p1')).toBe(true)
+  })
+
+  it('is false for merchants', () => {
+    expect(isProductSyncActivity('merchants', 'merchants')).toBe(false)
   })
 })

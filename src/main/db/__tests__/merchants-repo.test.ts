@@ -86,6 +86,10 @@ describe('MerchantsRepo incremental sync helpers', () => {
       expect(targets.map((t) => t.id)).not.toContain('fresh')
       expect(targets.map((t) => t.id)).not.toContain('nonldxp')
 
+      const autoPool = repo.listScrapableNeedingSync({ freshHours: 24, excludeFailing: true })
+      expect(autoPool.map((t) => t.id)).toEqual(['never', 'stale'])
+      expect(autoPool.map((t) => t.id)).not.toContain('failed')
+
       const top1 = repo.listScrapableNeedingSync({ freshHours: 24, limit: 1 })
       expect(top1.map((t) => t.id)).toEqual(['never'])
 
@@ -130,6 +134,63 @@ describe('MerchantsRepo incremental sync helpers', () => {
       const none = repo.candidatesForQuery('   ', 24)
       expect(none.merchantIds).toEqual([])
       expect(none.totalMatching).toBe(0)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+})
+
+describe('MerchantsRepo setAppHealth timestamp', () => {
+  it('refreshes app_health_at only on healthy; failing/retrying preserve stamp', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      const successAt = hoursAgo(5)
+      insertMerchant(db, {
+        id: 'm1',
+        name: '店',
+        shopPlatform: 'ldxp',
+        shopToken: 'tok1',
+        appHealthStatus: 'healthy',
+        appHealthAt: successAt
+      })
+
+      repo.setAppHealth('m1', 'retrying')
+      let row = repo.getById('m1')
+      expect(row?.healthStatus).toBe('retrying')
+      expect(row?.healthCheckedAt).toBe(successAt)
+
+      repo.setAppHealth('m1', 'failing', 'network')
+      row = repo.getById('m1')
+      expect(row?.healthStatus).toBe('failing')
+      expect(row?.healthMessage).toBe('network')
+      expect(row?.healthCheckedAt).toBe(successAt)
+
+      const beforeOk = Date.now()
+      repo.setAppHealth('m1', 'healthy')
+      row = repo.getById('m1')
+      expect(row?.healthStatus).toBe('healthy')
+      expect(row?.healthCheckedAt).toBeTruthy()
+      expect(Date.parse(row!.healthCheckedAt!)).toBeGreaterThanOrEqual(beforeOk - 1000)
+      expect(row?.healthCheckedAt).not.toBe(successAt)
+
+      // by shop ref
+      insertMerchant(db, {
+        id: 'm2',
+        name: '店2',
+        shopPlatform: 'ldxp',
+        shopToken: 'tok2',
+        appHealthStatus: 'healthy',
+        appHealthAt: successAt
+      })
+      repo.setAppHealthByShopRef('ldxp', 'tok2', 'failing', 'boom')
+      row = repo.getById('m2')
+      expect(row?.healthStatus).toBe('failing')
+      expect(row?.healthCheckedAt).toBe(successAt)
+      repo.setAppHealthByShopRef('ldxp', 'tok2', 'healthy')
+      row = repo.getById('m2')
+      expect(row?.healthStatus).toBe('healthy')
+      expect(row?.healthCheckedAt).not.toBe(successAt)
     } finally {
       closeDatabase(db)
     }

@@ -26,11 +26,31 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   /** @deprecated dual-fill with shopScrapeEnabled */
   ldxpScrapeEnabled: true,
   notifyOnJobFinished: false,
+  blockOnShopSyncFail: false,
   theme: 'system',
+  proxyCoreEnabled: false,
+  proxySubscriptionUrl: '',
+  proxySubscriptions: [],
+  proxyCallLogEnabled: false,
+  /** 程序运行期间按平台独立随机刷新店铺（须用户显式开启） */
+  autoRefreshEnabled: false,
+  /** 每平台两次自动刷新之间的最短间隔 */
+  autoRefreshMinIntervalMs: 3 * 60_000,
+  /** 每平台两次自动刷新之间的最长间隔 */
+  autoRefreshMaxIntervalMs: 12 * 60_000,
   recentSearches: [],
   searchExcludeWords: [],
   savedSearches: [] as SavedSearch[]
 }
+
+/** Pinned mihomo release for first-run download (MetaCubeX/mihomo). */
+export const PROXY_CORE_MIHOMO_VERSION = 'v1.19.12'
+
+/** Auto-refresh interval clamp (ms). */
+export const AUTO_REFRESH_LIMITS = {
+  minIntervalMs: { min: 60_000, max: 24 * 60 * 60_000, default: 3 * 60_000 },
+  maxIntervalMs: { min: 60_000, max: 24 * 60 * 60_000, default: 12 * 60_000 }
+} as const
 
 export const RATE_LIMITS = {
   priceaiMerchantsIntervalMs: { min: 300, max: 800, default: 500 },
@@ -63,7 +83,36 @@ export const SHOP_API_LIMITS = {
 export const BOOTSTRAP_TOP_N = 50
 
 /** SQLite schema user_version for migrations. */
-export const DB_SCHEMA_VERSION = 10
+export const DB_SCHEMA_VERSION = 11
+
+/** 抓取失败后的换节点重试策略 */
+export const PROXY_NODE_RETRY = {
+  /** 单店失败后最多尝试的其他节点数 */
+  maxNodes: 3,
+  /** 「节点在平台不可用」记录的过期时长 */
+  badNodeTtlHours: 24
+} as const
+
+/**
+ * 代理节点动态打分（见 docs/NODE-SCORE.md）。
+ * enabled=false 时 pick 回退 delay 序，record* 为 no-op。
+ */
+export const NODE_SCORE = {
+  enabled: true,
+  alpha: 0.3,
+  alphaHeal: 0.3,
+  failPenaltyBaseMs: 3_000,
+  failPenaltyMaxMs: 15_000,
+  failPenaltyMultiplier: 4,
+  floorMs: 50,
+  temperature: 1.5,
+  failStreakSoftCap: 5,
+  failWeightMin: 0.15,
+  failWeightStep: 0.15,
+  minSamplesPreferEwma: 3,
+  neutralMs: 500,
+  idleClearMs: 7 * 24 * 3_600_000
+} as const
 
 /** Cap for settings.recentSearches */
 export const RECENT_SEARCHES_MAX = 12

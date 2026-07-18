@@ -5,7 +5,7 @@
 | 状态 | M1 已实现（client / identify / 同步管线 / 库存刷新） |
 | 日期 | 2026-07-18 |
 | 参考站 | https://flyai.qzz.io/ |
-| 优先级 | P1（见 `MERCHANT-PLATFORM-TAXONOMY.md`） |
+| 优先级 | P1（平台族扩展，次于 shopApi） |
 | 覆盖 | 本库 `collector_kind=dujiao` 约 23 家 · offer 约 266 |
 
 ---
@@ -122,7 +122,7 @@
 | 结果 | 站点数（约） | 说明 |
 | --- | --- | --- |
 | Next API 正常 | 18+ | 含 flyai、ultra.makelove.cloud、burstpro、xtacc、gmail91、morimm 等 |
-| 403 / 宕机 / 非 JSON | 少数 | 如 shop.auto-subscribe.com 403；部分 taxonomy 标 failing 的站 |
+| 403 / 宕机 / 非 JSON | 少数 | 如 shop.auto-subscribe.com 403；部分历史上健康状态为 failing 的站 |
 | 仅 SPA 壳无 API | 极少数 | 同步时记失败，不拖垮批任务 |
 
 ### 2.6 合规与访问策略
@@ -407,9 +407,8 @@ sitemap 含商品 loc，可作人工核对，同步不依赖 sitemap
 
 ## 12. 参考
 
-- 库内分类：`MERCHANT-PLATFORM-TAXONOMY.md` § dujiao / P1  
 - 适配器接口：`src/main/platforms/registry.ts`  
 - 识别：`src/shared/platforms/identify.ts`  
 - shopApi 对照实现：`src/main/platforms/shopapi/*`  
 - 上游：Dujiao-Next（dujiao-next.com）；归档原版 assimon/dujiaoka  
-- 样本 origin 列表：taxonomy 中 23 家 host 表  
+- 样本：库内 `collector_kind=dujiao` 商家（host / entry_url）

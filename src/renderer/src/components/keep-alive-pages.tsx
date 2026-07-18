@@ -45,9 +45,9 @@ export function KeepAlivePages(): React.JSX.Element {
         return (
           <div
             key={page.key}
-            className="route-alive"
-            hidden={!on}
+            className={`route-alive${on ? ' is-active' : ''}`}
             aria-hidden={!on}
+            inert={!on || undefined}
           >
             {page.element}
           </div>

@@ -1,6 +1,6 @@
 import { ipcRenderer } from 'electron'
 import { IPC_CHANNELS, type RendererApi } from '@shared/types/ipc'
-import type { SyncProgressEvent } from '@shared/types/sync'
+import type { SyncHttpRequestEntry, SyncProgressEvent } from '@shared/types/sync'
 
 export function createRendererApi(): RendererApi {
   return {
@@ -25,12 +25,24 @@ export function createRendererApi(): RendererApi {
       listJobs: (q) => ipcRenderer.invoke(IPC_CHANNELS.syncListJobs, q ?? {}),
       deleteJob: (jobId) => ipcRenderer.invoke(IPC_CHANNELS.syncDeleteJob, { jobId }),
       clearHistory: () => ipcRenderer.invoke(IPC_CHANNELS.syncClearHistory),
+      listRequestLogs: () => ipcRenderer.invoke(IPC_CHANNELS.syncListRequestLogs),
+      clearRequestLogs: () => ipcRenderer.invoke(IPC_CHANNELS.syncClearRequestLogs),
       onProgress: (cb) => {
         const listener = (_event: Electron.IpcRendererEvent, payload: SyncProgressEvent): void => {
           cb(payload)
         }
         ipcRenderer.on(IPC_CHANNELS.syncProgress, listener)
         return () => ipcRenderer.removeListener(IPC_CHANNELS.syncProgress, listener)
+      },
+      onRequestLog: (cb) => {
+        const listener = (
+          _event: Electron.IpcRendererEvent,
+          payload: SyncHttpRequestEntry
+        ): void => {
+          cb(payload)
+        }
+        ipcRenderer.on(IPC_CHANNELS.syncRequestLog, listener)
+        return () => ipcRenderer.removeListener(IPC_CHANNELS.syncRequestLog, listener)
       }
     },
     favorites: {
@@ -60,7 +72,26 @@ export function createRendererApi(): RendererApi {
       get: () => ipcRenderer.invoke(IPC_CHANNELS.diagnosticsGet)
     },
     window: {
-      setDialogOverlay: (open) => ipcRenderer.invoke(IPC_CHANNELS.windowSetDialogOverlay, open)
+      minimize: () => ipcRenderer.invoke(IPC_CHANNELS.windowMinimize),
+      maximizeToggle: () => ipcRenderer.invoke(IPC_CHANNELS.windowMaximizeToggle),
+      close: () => ipcRenderer.invoke(IPC_CHANNELS.windowClose),
+      isMaximized: () => ipcRenderer.invoke(IPC_CHANNELS.windowIsMaximized),
+      onMaximized: (cb) => {
+        const listener = (_e: Electron.IpcRendererEvent, maximized: boolean): void => {
+          cb(Boolean(maximized))
+        }
+        ipcRenderer.on(IPC_CHANNELS.windowMaximized, listener)
+        return () => ipcRenderer.removeListener(IPC_CHANNELS.windowMaximized, listener)
+      }
+    },
+    proxyCore: {
+      status: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreStatus),
+      apply: (req) => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreApply, req),
+      detail: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreDetail),
+      setCallLogEnabled: (enabled) =>
+        ipcRenderer.invoke(IPC_CHANNELS.proxyCoreSetCallLog, { enabled }),
+      clearCallLogs: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreClearCallLogs),
+      clearBadNodes: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreClearBadNodes)
     }
   }
 }

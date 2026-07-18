@@ -463,7 +463,7 @@ export function FavoritesPage(): React.JSX.Element {
                           </Link>
                         ) : null}
                         <button
-                          className="linkish"
+                          className="linkish linkish-danger"
                           type="button"
                           onClick={() =>
                             void window.api.favorites

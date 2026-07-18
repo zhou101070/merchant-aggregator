@@ -1,0 +1,297 @@
+﻿/* dialogs.css — 模态层、确认框、Toast */
+
+/* ================= 弹层 ================= */
+
+/* 自绘模态根：ModalDialog 使用；与原生 <dialog> 确认框并存 */
+.modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(24px, calc(env(titlebar-area-height, 0px) + 16px)) 24px 24px;
+  box-sizing: border-box;
+}
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: oklch(0 0 0 / 45%);
+  opacity: 1;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+.modal-root > .dialog {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out);
+}
+@starting-style {
+  .modal-root > .dialog {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  .modal-backdrop {
+    opacity: 0;
+  }
+}
+.modal-root.leaving > .dialog,
+.modal-root > .dialog.leaving {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  pointer-events: none;
+}
+.modal-root.leaving > .modal-backdrop,
+.modal-root:has(> .dialog.leaving) > .modal-backdrop {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 面板本体：原生 dialog（确认框）+ 自绘 .dialog */
+dialog.dialog,
+.modal-root > .dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--bg-overlay);
+  color: var(--ink);
+  box-shadow: var(--shadow-3);
+  padding: 0;
+  width: min(440px, calc(100vw - 48px));
+  max-height: calc(100vh - env(titlebar-area-height, 0px) - 48px);
+  outline: none;
+  /* 裁切 head 背景，保留顶部圆角 */
+  overflow: hidden;
+}
+dialog.dialog {
+  /* 视口居中（含确认框） */
+  margin: auto;
+}
+dialog.dialog.dialog-wide,
+.modal-root > .dialog.dialog-wide {
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(80vh, 720px, calc(100vh - env(titlebar-area-height, 0px) - 48px));
+}
+dialog.dialog.dialog-merchant,
+.modal-root > .dialog.dialog-merchant {
+  width: min(960px, calc(100vw - 48px));
+  max-height: min(88vh, 820px, calc(100vh - env(titlebar-area-height, 0px) - 48px));
+}
+dialog.dialog.dialog-wide[open],
+dialog.dialog.dialog-merchant[open],
+.modal-root > .dialog.dialog-wide,
+.modal-root > .dialog.dialog-merchant {
+  display: flex;
+  flex-direction: column;
+}
+dialog.dialog.dialog-wide > .dialog-head,
+dialog.dialog.dialog-merchant > .dialog-head,
+dialog.dialog.dialog-wide > .dialog-actions,
+dialog.dialog.dialog-merchant > .dialog-actions,
+.modal-root > .dialog.dialog-wide > .dialog-head,
+.modal-root > .dialog.dialog-merchant > .dialog-head,
+.modal-root > .dialog.dialog-wide > .dialog-actions,
+.modal-root > .dialog.dialog-merchant > .dialog-actions {
+  flex: none;
+}
+dialog.dialog.dialog-wide .dialog-body,
+dialog.dialog.dialog-merchant .dialog-body,
+.modal-root > .dialog.dialog-wide .dialog-body,
+.modal-root > .dialog.dialog-merchant .dialog-body {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding-top: 8px;
+}
+.merchant-detail-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.merchant-detail-actions .merchant-detail-block {
+  margin-left: auto;
+}
+
+.merchant-dialog-products {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  margin-top: 4px;
+}
+.merchant-dialog-products .filter-bar {
+  margin-top: 10px;
+}
+.merchant-products-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 8px;
+}
+.merchant-products-title strong {
+  font-size: var(--text-m);
+  font-weight: 600;
+}
+.merchant-products-title .sub {
+  font-size: var(--text-s);
+  color: var(--ink-2);
+}
+.merchant-product-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: min(240px, 100%);
+  height: 28px;
+  margin: 0 0 8px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--bg-raised);
+  color: var(--ink-3);
+  box-sizing: border-box;
+}
+.merchant-product-search:focus-within {
+  border-color: var(--focus);
+  color: var(--ink-2);
+}
+.merchant-product-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: var(--text-s);
+  box-shadow: none;
+}
+.merchant-product-search-input:hover,
+.merchant-product-search-input:focus-visible {
+  border: none;
+  outline: none;
+}
+.merchant-dialog-table-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  margin: 0 -8px;
+  padding: 0 8px 12px;
+}
+dialog.dialog::backdrop {
+  background: oklch(0 0 0 / 45%);
+  opacity: 1;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+dialog.dialog[open] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--dur-3) var(--ease-out),
+    transform var(--dur-3) var(--ease-out);
+}
+@starting-style {
+  dialog.dialog[open] {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  dialog.dialog[open]::backdrop {
+    opacity: 0;
+  }
+}
+dialog.dialog[open].leaving {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  pointer-events: none;
+}
+dialog.dialog[open].leaving::backdrop {
+  opacity: 0;
+  pointer-events: none;
+}
+.dialog-body {
+  padding: 20px 24px 4px;
+}
+.dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 20px 24px 8px;
+  background: var(--bg-overlay);
+}
+.dialog-head .dialog-title {
+  margin: 0;
+  padding-top: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.dialog-head .icon-btn {
+  flex: none;
+  margin: -4px -6px 0 0;
+}
+.dialog-title {
+  margin: 0 0 8px;
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+.dialog-text {
+  margin: 0;
+  font-size: var(--text-m);
+  color: var(--ink-2);
+  white-space: pre-line;
+  line-height: 1.6;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 24px 20px;
+}
+
+/* Toast */
+.toaster {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 220px;
+  max-width: 360px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--bg-overlay);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-m);
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+.toast .dot {
+  margin-top: 6px;
+}
+@starting-style {
+  .toast {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+}

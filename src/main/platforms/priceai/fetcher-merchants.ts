@@ -63,7 +63,14 @@ export async function fetchAllMerchants(
 
   while (offset < total) {
     throwIfAborted(options.signal)
-    await limiter.waitTurn()
+    try {
+      await limiter.waitTurn(options.signal)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new AppError('CANCELLED', 'merchants fetch cancelled')
+      }
+      throw err
+    }
     throwIfAborted(options.signal)
 
     let page: PriceaiMerchantsPageParsed
@@ -85,7 +92,14 @@ export async function fetchAllMerchants(
         backoff,
         error: err instanceof Error ? err.message : String(err)
       })
-      await sleep(backoff)
+      try {
+        await sleep(backoff, options.signal)
+      } catch (sleepErr) {
+        if (sleepErr instanceof Error && sleepErr.name === 'AbortError') {
+          throw new AppError('CANCELLED', 'merchants fetch cancelled')
+        }
+        throw sleepErr
+      }
       continue
     }
 

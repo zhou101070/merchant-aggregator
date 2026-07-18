@@ -29,4 +29,5 @@
 ## 设计文档
 
 - 视觉与交互规范：[DESIGN.md](DESIGN.md)
+- 代理节点动态打分与分配：[NODE-SCORE.md](NODE-SCORE.md)（一期已实现）
 - 开发入口与命令：[README.md](../README.md)

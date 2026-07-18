@@ -7,15 +7,15 @@ export function SettingsRow({
   desc,
   children
 }: {
-  label: string
+  label?: string
   desc?: string
   children: ReactNode
 }): React.JSX.Element {
   return (
     <div className="settings-row">
       <div className="s-main">
-        <div className="s-label">{label}</div>
-        {desc ? <div className="s-desc">{desc}</div> : null}
+        {label ? <div className="s-label">{label}</div> : null}
+        {desc ? <div className={`s-desc${label ? '' : ' is-solo'}`}>{desc}</div> : null}
       </div>
       <div className="s-ctrl">{children}</div>
     </div>
@@ -27,11 +27,13 @@ export function NumberField({
   value,
   min,
   max,
+  disabled,
   onCommit
 }: {
   value: number
   min: number
   max?: number
+  disabled?: boolean
   onCommit: (v: number) => void
 }): React.JSX.Element {
   return (
@@ -40,6 +42,7 @@ export function NumberField({
       type="number"
       min={min}
       max={max}
+      disabled={disabled}
       defaultValue={value}
       onBlur={(e) => {
         const v = Number(e.target.value)

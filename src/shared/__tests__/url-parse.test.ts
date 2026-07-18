@@ -24,6 +24,21 @@ describe('parseShopUrl', () => {
     })
   })
 
+  it('keeps underscore, hyphen, and dot in shop token', () => {
+    const r = parseShopUrl('https://pay.ldxp.cn/shop/echo_dream')
+    expect(r).toMatchObject({
+      platformId: 'ldxp',
+      token: 'echo_dream',
+      baseUrl: 'https://pay.ldxp.cn',
+      profileEnabled: true
+    })
+    expect(r?.shopUrl).toBe('https://pay.ldxp.cn/shop/echo_dream')
+    expect(parseShopUrl('https://pay.ldxp.cn/shop/echo-dream')?.token).toBe('echo-dream')
+    const dotted = parseShopUrl('https://pay.ldxp.cn/shop/ai.shop')
+    expect(dotted?.token).toBe('ai.shop')
+    expect(dotted?.shopUrl).toBe('https://pay.ldxp.cn/shop/ai.shop')
+  })
+
   it('rejects unknown host', () => {
     expect(parseShopUrl('https://evil.example/shop/ABC123')).toBeNull()
   })
@@ -67,6 +82,11 @@ describe('parseShopItemKey', () => {
   it('parses ldxp item URL', () => {
     const r = parseShopItemKey('https://pay.ldxp.cn/item/Xy9Z')
     expect(r).toMatchObject({ platformId: 'ldxp', goodsKey: 'Xy9Z' })
+  })
+
+  it('keeps underscore and hyphen in goods key', () => {
+    expect(parseShopItemKey('https://pay.ldxp.cn/item/ab_cd')?.goodsKey).toBe('ab_cd')
+    expect(parseShopItemKey('https://catfk.com/item/ab-cd')?.goodsKey).toBe('ab-cd')
   })
 
   it('rejects unknown host item URL', () => {

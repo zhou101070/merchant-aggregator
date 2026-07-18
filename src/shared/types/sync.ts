@@ -30,6 +30,33 @@ export interface SyncProgressEvent {
   requestedJobType?: SyncJobType
 }
 
+/** One outbound HTTP call during an active sync job (UI request stream). */
+export type SyncHttpRequestPhase = 'pending' | 'done' | 'error'
+
+export interface SyncHttpRequestEntry {
+  id: string
+  jobId: string | null
+  method: string
+  url: string
+  host: string
+  /** Epoch ms when the request started */
+  startedAt: number
+  /** Epoch ms when settled; absent while pending */
+  endedAt?: number
+  /** Final duration ms; UI may compute live from startedAt while pending */
+  durationMs?: number
+  status?: number | null
+  error?: string | null
+  /**
+   * Outbound path label:
+   * - node name when pinned or resolved from mihomo connections
+   * - `MA-LB` while load-balancing / unresolved
+   * - `直连` when embedded proxy is off
+   */
+  node: string
+  phase: SyncHttpRequestPhase
+}
+
 export interface SyncJobRecord {
   id: string
   jobType: SyncJobType
@@ -59,12 +86,7 @@ export interface SyncStatus {
 
 /** History list filter — `running` means pending+running */
 export type SyncHistoryStatusFilter =
-  | 'all'
-  | 'running'
-  | 'succeeded'
-  | 'partial'
-  | 'failed'
-  | 'cancelled'
+  'all' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled'
 
 export interface SyncJobListQuery {
   status?: SyncHistoryStatusFilter
@@ -90,6 +112,11 @@ export interface SyncStartRequest {
   /** for shop_selected / ldxp_selected */
   merchantIds?: string[]
   force?: boolean
+  /**
+   * 后台自动刷新：不打开系统浏览器过人机；失败后标 failing，不再被自动挑选，
+   * 直到用户主动同步成功。
+   */
+  background?: boolean
 }
 
 const JOB_ALIAS: Record<string, SyncJobType> = {
@@ -124,6 +151,21 @@ export function normalizeJobType(jobType: SyncJobType | string): SyncJobType | n
 export function isShopJob(jobType: SyncJobType | string): boolean {
   const n = normalizeJobType(jobType)
   return n === 'shop_one' || n === 'shop_selected' || n === 'shop_all'
+}
+
+/**
+ * 同步中心「商品同步」：纯店刮任务，或 bootstrap 已进入刮店阶段。
+ * 商家列表 / 指纹探测不算商品同步。
+ */
+export function isProductSyncActivity(
+  jobType: SyncJobType | string,
+  phase?: string | null
+): boolean {
+  if (isShopJob(jobType)) return true
+  if (jobType !== 'bootstrap') return false
+  const p = (phase ?? '').trim()
+  if (!p || p === 'starting' || p === 'merchants' || p === 'fingerprint') return false
+  return true
 }
 
 /** Pairs of aliases that share lastSuccessAt. */

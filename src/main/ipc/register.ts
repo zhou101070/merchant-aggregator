@@ -1,4 +1,4 @@
-import { app, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { AppError } from '@shared/types/errors'
 import { DB_SCHEMA_VERSION } from '@shared/constants'
 import { IPC_CHANNELS } from '@shared/types/ipc'
@@ -13,11 +13,13 @@ import type { Repositories } from '../db/repositories'
 import type { SyncOrchestrator } from '../services/sync-orchestrator'
 import type { SearchService } from '../services/search-service'
 import { ProductStockService } from '../services/product-stock-service'
+import { clearSyncHttpRequests, listSyncHttpRequests } from '../services/sync-request-log'
 import { createLogger } from '../utils/logger'
 import { evaluateOpenExternal } from '../utils/url-safety'
 import { resolveUserDataDbPath } from '../db/connection'
 import { applyThemeSource } from '../theme'
-import { setDialogOverlayActive } from '../window-chrome'
+import type { ProxyCoreService } from '../services/proxy-core-service'
+import type { AutoRefreshScheduler } from '../services/auto-refresh-scheduler'
 
 const log = createLogger('ipc')
 
@@ -25,6 +27,8 @@ export interface IpcContext {
   repos: Repositories
   sync: SyncOrchestrator
   search: SearchService
+  proxyCore: ProxyCoreService | null
+  autoRefresh: AutoRefreshScheduler | null
 }
 
 function toIpcError(err: unknown): { code: string; message: string } {
@@ -32,7 +36,9 @@ function toIpcError(err: unknown): { code: string; message: string } {
   return { code: 'INTERNAL', message: err instanceof Error ? err.message : String(err) }
 }
 
-const HANDLERS = Object.values(IPC_CHANNELS).filter((c) => c !== IPC_CHANNELS.syncProgress)
+const HANDLERS = Object.values(IPC_CHANNELS).filter(
+  (c) => c !== IPC_CHANNELS.syncProgress && c !== IPC_CHANNELS.syncRequestLog
+)
 
 export function registerIpcHandlers(ctx: IpcContext): void {
   for (const ch of HANDLERS) {
@@ -94,6 +100,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC_CHANNELS.syncClearHistory, async () => ({
     deleted: ctx.repos.syncJobs.clearFinished()
   }))
+  ipcMain.handle(IPC_CHANNELS.syncListRequestLogs, async () => listSyncHttpRequests())
+  ipcMain.handle(IPC_CHANNELS.syncClearRequestLogs, async () => {
+    clearSyncHttpRequests()
+    return { ok: true as const }
+  })
 
   ipcMain.handle(IPC_CHANNELS.favoritesList, async () => ctx.repos.favorites.list())
   ipcMain.handle(
@@ -147,7 +158,148 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     if (partial.theme !== undefined) {
       applyThemeSource(next.theme)
     }
+    if (
+      ctx.proxyCore &&
+      (partial.proxyCoreEnabled !== undefined ||
+        partial.proxySubscriptionUrl !== undefined ||
+        partial.proxySubscriptions !== undefined)
+    ) {
+      void ctx.proxyCore.apply({
+        enabled: next.proxyCoreEnabled,
+        subscriptions: next.proxySubscriptions,
+        callLogEnabled: next.proxyCallLogEnabled
+      })
+    } else if (ctx.proxyCore && partial.proxyCallLogEnabled !== undefined) {
+      ctx.proxyCore.setCallLogEnabled(next.proxyCallLogEnabled)
+    }
+    if (
+      ctx.autoRefresh &&
+      (partial.autoRefreshEnabled !== undefined ||
+        partial.autoRefreshMinIntervalMs !== undefined ||
+        partial.autoRefreshMaxIntervalMs !== undefined ||
+        partial.networkPaused !== undefined ||
+        partial.shopScrapeEnabled !== undefined ||
+        partial.ldxpScrapeEnabled !== undefined ||
+        partial.shopFreshHours !== undefined)
+    ) {
+      ctx.autoRefresh.reschedule()
+    }
     return next
+  })
+
+  ipcMain.handle(IPC_CHANNELS.proxyCoreStatus, async () => {
+    if (!ctx.proxyCore) {
+      return {
+        state: 'stopped' as const,
+        enabled: false,
+        proxyUrl: null,
+        mixedPort: null,
+        controllerPort: null,
+        message: '不可用',
+        binaryReady: false,
+        hasSubscription: false,
+        tunLikely: false,
+        tunInterfaces: [] as string[],
+        groupCount: 0,
+        callLogEnabled: false,
+        callLogCount: 0
+      }
+    }
+    return ctx.proxyCore.status()
+  })
+
+  ipcMain.handle(
+    IPC_CHANNELS.proxyCoreApply,
+    async (
+      _e,
+      req: {
+        enabled: boolean
+        subscriptions?: unknown
+        callLogEnabled?: boolean
+      }
+    ) => {
+      if (!ctx.proxyCore) {
+        throw new AppError('INTERNAL', 'proxy core not initialized')
+      }
+      const enabled = Boolean(req?.enabled)
+      const patch: Partial<AppSettings> = {
+        proxyCoreEnabled: enabled,
+        proxySubscriptions: Array.isArray(req?.subscriptions)
+          ? (req.subscriptions as AppSettings['proxySubscriptions'])
+          : ctx.repos.settings.get().proxySubscriptions
+      }
+      if (typeof req?.callLogEnabled === 'boolean') {
+        patch.proxyCallLogEnabled = req.callLogEnabled
+      }
+      const next = ctx.repos.settings.set(patch)
+      return ctx.proxyCore.apply({
+        enabled: next.proxyCoreEnabled,
+        subscriptions: next.proxySubscriptions,
+        callLogEnabled: next.proxyCallLogEnabled
+      })
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.proxyCoreDetail, async () => {
+    if (!ctx.proxyCore) {
+      return {
+        status: {
+          state: 'stopped' as const,
+          enabled: false,
+          proxyUrl: null,
+          mixedPort: null,
+          controllerPort: null,
+          message: '不可用',
+          binaryReady: false,
+          hasSubscription: false,
+          tunLikely: false,
+          tunInterfaces: [] as string[],
+          groupCount: 0,
+          callLogEnabled: false,
+          callLogCount: 0
+        },
+        groups: [],
+        callLogs: [],
+        callLogEnabled: false,
+        badNodes: []
+      }
+    }
+    const detail = await ctx.proxyCore.getDetail()
+    ctx.repos.platformBadNodes.purgeExpired()
+    return {
+      ...detail,
+      badNodes: ctx.repos.platformBadNodes.listActive().map((n) => ({
+        platformId: n.platformId,
+        nodeName: n.nodeName,
+        reason: n.reason,
+        expiresAt: n.expiresAt
+      }))
+    }
+  })
+
+  ipcMain.handle(
+    IPC_CHANNELS.proxyCoreSetCallLog,
+    async (_e, req: { enabled: boolean }) => {
+      if (!ctx.proxyCore) {
+        throw new AppError('INTERNAL', 'proxy core not initialized')
+      }
+      const enabled = Boolean(req?.enabled)
+      ctx.repos.settings.set({ proxyCallLogEnabled: enabled })
+      return ctx.proxyCore.setCallLogEnabled(enabled)
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.proxyCoreClearCallLogs, async () => {
+    if (!ctx.proxyCore) {
+      return { ok: true as const, callLogs: [] as const }
+    }
+    ctx.proxyCore.clearCallLogs()
+    return { ok: true as const, callLogs: ctx.proxyCore.getCallLogs() }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.proxyCoreClearBadNodes, async () => {
+    ctx.repos.platformBadNodes.clear()
+    return { ok: true as const }
   })
 
   ipcMain.handle(IPC_CHANNELS.shellOpenExternal, async (_e, req: { url: string }) => {
@@ -161,6 +313,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   ipcMain.handle(IPC_CHANNELS.diagnosticsGet, async () => {
     const status = ctx.sync.getStatus()
+    const proxy = ctx.proxyCore?.status()
     return {
       counts: status.counts,
       lastSuccessAt: status.lastSuccessAt,
@@ -168,11 +321,36 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       dbPath: resolveUserDataDbPath(app.getPath('userData')),
       version: app.getVersion(),
       networkPaused: ctx.repos.settings.get().networkPaused,
-      priceSource: 'ldxp_shop_products'
+      priceSource: 'ldxp_shop_products',
+      proxyCore: proxy
+        ? {
+            state: proxy.state,
+            mixedPort: proxy.mixedPort,
+            message: proxy.message,
+            binaryReady: proxy.binaryReady
+          }
+        : null,
+      autoRefresh: ctx.autoRefresh?.status() ?? null
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.windowSetDialogOverlay, async (_e, open: boolean) => {
-    setDialogOverlayActive(Boolean(open))
+  function winFrom(e: Electron.IpcMainInvokeEvent): BrowserWindow | null {
+    return BrowserWindow.fromWebContents(e.sender)
+  }
+
+  ipcMain.handle(IPC_CHANNELS.windowMinimize, async (e) => {
+    winFrom(e)?.minimize()
+  })
+  ipcMain.handle(IPC_CHANNELS.windowMaximizeToggle, async (e) => {
+    const w = winFrom(e)
+    if (!w) return
+    if (w.isMaximized()) w.unmaximize()
+    else w.maximize()
+  })
+  ipcMain.handle(IPC_CHANNELS.windowClose, async (e) => {
+    winFrom(e)?.close()
+  })
+  ipcMain.handle(IPC_CHANNELS.windowIsMaximized, async (e) => {
+    return Boolean(winFrom(e)?.isMaximized())
   })
 }
