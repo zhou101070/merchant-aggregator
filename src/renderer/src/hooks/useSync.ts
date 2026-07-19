@@ -5,6 +5,8 @@ import type {
   SyncStartRequest,
   SyncStatus
 } from '@shared/types/sync'
+import { onDataCleared } from '../lib/data-events'
+import { formatUserError } from '../lib/sync-labels'
 
 export type SyncStartExtra = Omit<SyncStartRequest, 'jobType'>
 
@@ -32,7 +34,7 @@ export function useSyncStatus(): {
 
   useEffect(() => {
     void refresh()
-    const off = window.api.sync.onProgress((e) => {
+    const offProgress = window.api.sync.onProgress((e) => {
       setProgress(e)
       const terminal =
         e.status === 'succeeded' ||
@@ -45,7 +47,14 @@ export function useSyncStatus(): {
         void refresh()
       }
     })
-    return off
+    const offCleared = onDataCleared(() => {
+      setProgress(null)
+      void refresh()
+    })
+    return () => {
+      offProgress()
+      offCleared()
+    }
   }, [refresh])
 
   // status.running 仅在起停时刷新；进行中以 progress 为准，避免与商家页脱节
@@ -61,7 +70,7 @@ export function useSyncStatus(): {
         await window.api.sync.start({ jobType, ...extra })
         await refresh()
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(formatUserError(err))
       }
     },
     [refresh]

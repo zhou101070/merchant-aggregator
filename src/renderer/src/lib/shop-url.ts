@@ -5,7 +5,7 @@ import { DUJIAO_PLATFORM_ID, YICIYUAN_PLATFORM_ID } from '@shared/platforms/iden
 import { dujiaoCatalogUrl, dujiaoProductPageUrl } from '@shared/platforms/dujiao-urls'
 import { yiciyuanCatalogUrl, yiciyuanProductPageUrl } from '@shared/platforms/yiciyuan-urls'
 import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
-import { findProfileById, itemPageUrl } from '@shared/platforms/shop-types'
+import { findProfileById, itemPageUrl, shopRootUrl } from '@shared/platforms/shop-types'
 
 function itemUrlForSource(
   source: string | null | undefined,
@@ -35,6 +35,25 @@ export function itemUrlFromProductId(targetId: string): string | null {
   const token = parts[1]
   const goodsKey = parts.slice(2).join(':')
   return itemUrlForSource(source, token, goodsKey)
+}
+
+/** Build storefront URL from platform + shop token. */
+export function shopUrlFromPlatformToken(
+  platformId: string | null | undefined,
+  token: string | null | undefined
+): string | null {
+  const pid = (platformId ?? '').trim()
+  const tok = (token ?? '').trim()
+  if (!pid || !tok) return null
+  if (pid === DUJIAO_PLATFORM_ID || pid === 'dujiao') {
+    return dujiaoCatalogUrl(null, tok)
+  }
+  if (pid === YICIYUAN_PLATFORM_ID || pid === 'kami' || pid === 'yiciyuan') {
+    return yiciyuanCatalogUrl(null, tok)
+  }
+  const profile = findProfileById(pid, SHOP_PROFILES)
+  if (!profile) return null
+  return shopRootUrl(profile, tok)
 }
 
 /** Merchant "打开店铺" URL — dujiao catalog is {origin}/products; yiciyuan is site root. */

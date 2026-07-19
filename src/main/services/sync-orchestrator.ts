@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { BrowserWindow, Notification } from 'electron'
+import { formatErrorWithDetails, primaryErrorCode } from '@shared/lib/error-format'
 import { AppError, type AppErrorCode } from '@shared/types/errors'
 import {
   isShopJob,
@@ -11,7 +12,7 @@ import {
   type SyncStatus
 } from '@shared/types/sync'
 import { IPC_CHANNELS } from '@shared/types/ipc'
-import { APP_NAME, BOOTSTRAP_TOP_N, PROXY_NODE_RETRY } from '@shared/constants'
+import { APP_NAME, BOOTSTRAP_TOP_N, RATE_LIMITS } from '@shared/constants'
 import {
   DUJIAO_PLATFORM_ID,
   YICIYUAN_PLATFORM_ID,
@@ -20,26 +21,18 @@ import {
 } from '@shared/platforms/identify'
 import { enabledScrapablePlatformIds, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { findProfileById } from '@shared/platforms/shop-types'
-import { activeProxySubscriptions } from '@shared/types/proxy-subscription'
 import { resolveDujiaoBaseUrl } from '../platforms/dujiao/client'
 import { resolveYiciyuanBaseUrl } from '../platforms/yiciyuan/client'
 import { probeYiciyuan } from '../platforms/fingerprint/probe'
 import { IntervalLimiter } from './rate-limiter'
-import { isNodeRetryableError, nodeRetryMaxCandidates, pickCandidateNodes } from './node-retry'
-import {
-  pruneNodeScores,
-  recordAttemptFailure,
-  recordAttemptSuccess,
-  recordWafHit
-} from './node-score'
 import { shouldBlockMerchantAfterSyncFailure } from './sync-failure-policy'
-import { getProxyCoreService } from './proxy-core-service'
 import { enterSyncRequestScope, leaveSyncRequestScope } from './sync-request-log'
 import type { Repositories } from '../db/repositories'
 import { createLogger } from '../utils/logger'
 import { fetchAllMerchants } from '../platforms/priceai/fetcher-merchants'
 import { PriceaiClient } from '../platforms/priceai/client'
 import { scrapeShopTarget, type ShopScrapeTarget } from '../platforms/registry'
+import type { JobPoolSnapshot } from '@shared/types/sync'
 
 const log = createLogger('sync')
 
@@ -85,12 +78,18 @@ interface RunningJob {
 export class SyncOrchestrator {
   private readonly running = new Map<string, RunningJob>()
   private readonly laneOwner = new Map<Lane, string>()
+  /** Live + last pool snapshot per job (memory only) */
+  private readonly poolSnapshots = new Map<string, JobPoolSnapshot>()
 
   constructor(private readonly repos: Repositories) {
     const n = this.repos.syncJobs.cancelOrphanedRunning()
     if (n > 0) {
       log.warn('cleared orphaned sync jobs from previous session', { count: n })
     }
+  }
+
+  getPoolSnapshot(jobId: string): JobPoolSnapshot | null {
+    return this.poolSnapshots.get(jobId) ?? null
   }
 
   getStatus(): SyncStatus {
@@ -109,11 +108,6 @@ export class SyncOrchestrator {
   }
 
   start(req: SyncStartRequest): { jobId: string } {
-    const settings = this.repos.settings.get()
-    if (settings.networkPaused) {
-      throw new AppError('PAUSED', 'network sync is paused')
-    }
-
     const requestedJobType = req.jobType
     const jobType = normalizeJobType(req.jobType)
     if (!jobType) {
@@ -128,12 +122,6 @@ export class SyncOrchestrator {
         throw new AppError('SYNC_LOCKED', `${lane} lane already running`)
       }
     }
-
-    const shopScrapeOn = settings.shopScrapeEnabled ?? settings.ldxpScrapeEnabled
-    if (isShopJob(jobType) && !shopScrapeOn) {
-      throw new AppError('PAUSED', 'shop scrape disabled in settings')
-    }
-    // bootstrap: allow merchants phase even when shop scrape off (D17)
 
     if (jobType === 'shop_one') {
       const target = this.resolveShopTarget(req)
@@ -432,9 +420,10 @@ export class SyncOrchestrator {
       const minInterval = settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs
       const enabledIds = enabledScrapablePlatformIds()
 
+      const priceaiIntervalMs = RATE_LIMITS.priceaiMerchantsIntervalMs.default
       if (jobType === 'merchants') {
         const client = new PriceaiClient({ userAgent: settings.priceaiUa })
-        await this.runMerchants(jobId, signal, client, settings.requestIntervalMs)
+        await this.runMerchants(jobId, signal, client, priceaiIntervalMs)
       } else if (jobType === 'bootstrap') {
         const client = new PriceaiClient({ userAgent: settings.priceaiUa })
         const merchants = await this.fetchMerchantsPhase(
@@ -442,21 +431,8 @@ export class SyncOrchestrator {
           'bootstrap',
           signal,
           client,
-          settings.requestIntervalMs
+          priceaiIntervalMs
         )
-        const shopOn = settings.shopScrapeEnabled ?? settings.ldxpScrapeEnabled
-        if (!shopOn) {
-          this.finishSuccess(
-            jobId,
-            'bootstrap',
-            'done',
-            merchants.rows.length,
-            merchants.rows.length,
-            `merchants ${merchants.rows.length}; shop scrape disabled, skipped deep scrape`,
-            { merchantsUpserted: merchants.rows.length, shopSkipped: true }
-          )
-          return
-        }
         const targets = this.repos.merchants.listScrapableNeedingSync({
           freshHours: settings.shopFreshHours,
           limit: BOOTSTRAP_TOP_N,
@@ -672,13 +648,12 @@ export class SyncOrchestrator {
     opts?: {
       skippedFresh?: number
       extraMeta?: Record<string, unknown>
-      /** 后台自动刷新：不打开系统浏览器、WAF 不延后重试 */
+      /** kept for API compat; simulated browser path has no interactive WAF window */
       background?: boolean
     }
   ): Promise<void> {
     let done = 0
     let failed = 0
-    let ok = 0
     const errors: {
       merchantId: string | null
       platformId: string
@@ -688,262 +663,29 @@ export class SyncOrchestrator {
       details?: unknown
     }[] = []
     const total = targets.length
-    const settings = this.repos.settings.get()
-    const pageConcurrency = settings.shopPageConcurrency
-    const background = opts?.background === true
-    const openSystemBrowserOnWaf =
-      !background &&
-      !(settings.proxyCoreEnabled && activeProxySubscriptions(settings.proxySubscriptions).length > 0)
-    /** First-pass WAF hits — retry once after the rest of the queue (manual only) */
-    const wafDeferred: ShopScrapeTarget[] = []
+    const pageConcurrency = 1
 
-    const markFail = (
-      target: ShopScrapeTarget,
-      err: unknown,
-      label: string
-    ): void => {
-      failed += 1
-      done += 1
-      const message = err instanceof Error ? err.message : String(err)
-      const code = err instanceof AppError ? err.code : 'INTERNAL'
-      const details = err instanceof AppError ? err.details : undefined
-      const notFamily =
-        err instanceof AppError &&
-        err.code === 'SCHEMA_VALIDATION' &&
-        !!(err.details as { notFamily?: boolean } | undefined)?.notFamily
-      errors.push({
-        merchantId: target.merchantId,
-        platformId: target.platformId,
-        token: target.token,
-        message: notFamily ? `指纹不符: ${message}` : message,
-        code,
-        details
-      })
-      if (notFamily && target.merchantId) {
-        this.repos.merchants.clearShopRef(target.merchantId)
-      } else if (target.merchantId) {
-        this.repos.merchants.setAppHealth(target.merchantId, 'failing', message)
-      } else if (!notFamily) {
-        this.repos.merchants.setAppHealthByShopRef(
-          target.platformId,
-          target.token,
-          'failing',
-          message
-        )
-      }
-      if (
-        target.merchantId &&
-        shouldBlockMerchantAfterSyncFailure({
-          enabled: this.repos.settings.get().blockOnShopSyncFail,
-          code,
-          notFamily,
-          merchantId: target.merchantId
-        })
-      ) {
-        const m = this.repos.merchants.getById(target.merchantId)
-        this.repos.blocklist.add({
-          targetType: 'merchant',
-          targetId: target.merchantId,
-          titleSnapshot: m?.name ?? `${target.platformId}:${target.token}`
-        })
-        log.info('auto-blocked merchant after shop sync fail', {
-          merchantId: target.merchantId,
-          platformId: target.platformId,
-          token: target.token,
-          code
-        })
-      }
-      this.progress(
-        jobId,
-        jobType,
-        'shop',
-        done,
-        total,
-        `${label} ${target.platformId}:${target.token} (${done}/${total})`
-      )
-      log.warn('shop scrape failed', {
-        platformId: target.platformId,
-        token: target.token,
-        code,
-        message,
-        notFamily,
-        details
-      })
-    }
-
-    const markOk = (
-      target: ShopScrapeTarget,
-      result: Awaited<ReturnType<typeof scrapeShopTarget>>
-    ): void => {
-      const source =
-        result.rows[0]?.source ??
-        findProfileById(target.platformId, SHOP_PROFILES)?.sourceId ??
-        target.platformId
-      this.repos.shopProducts.replaceForShop(source, target.token, result.rows)
-      if (target.merchantId) {
-        this.repos.merchants.setAppHealth(target.merchantId, 'healthy')
-        this.repos.merchants.relinkShopProducts(
-          target.platformId,
-          target.token,
-          target.merchantId
-        )
-      } else {
-        this.repos.merchants.setAppHealthByShopRef(target.platformId, target.token, 'healthy')
-      }
-      ok += 1
-      done += 1
-      this.progress(
-        jobId,
-        jobType,
-        'shop',
-        done,
-        total,
-        `ok ${target.platformId}:${target.token} (${done}/${total})`
-      )
-    }
-
-    /**
-     * 失败换节点策略：pin 一个未标记的节点整店重试（最多 maxNodes 个）。
-     * 后续节点成功 ⇒ 之前失败的节点确证为该平台不可用（持久化，TTL 过期）。
-     * 全部失败 ⇒ 不标记任何节点（分不清是节点坏还是链接坏），由调用方屏蔽商家。
-     * pin 是全局的（共享 mixed-port）——shop lane 串行所以安全；并行的
-     * priceai lane 流量会短暂跟随被测节点，窗口小，可接受。
-     */
-    const rotateNodesAndRetry = async (
-      target: ShopScrapeTarget,
-      firstError: unknown,
-      attempt: () => ReturnType<typeof scrapeShopTarget>
-    ): Promise<
-      | { outcome: 'ok'; result: Awaited<ReturnType<typeof scrapeShopTarget>> }
-      | { outcome: 'fail'; finalError: unknown }
-    > => {
-      const core = getProxyCoreService()
-      if (
-        !isNodeRetryableError(firstError) ||
-        !core ||
-        core.status().state !== 'running'
-      ) {
-        return { outcome: 'fail', finalError: firstError }
-      }
-      let nodes: Array<{ name: string; delay?: number }> = []
-      let listNodesOk = false
-      try {
-        nodes = await core.listNodes()
-        listNodesOk = true
-      } catch (e) {
-        log.warn('listNodes failed, skip node rotation', { err: String(e) })
-      }
-      const delayByName = new Map<string, number | undefined>()
-      const knownNames = new Set<string>()
-      for (const n of nodes) {
-        const name = n.name.trim()
-        if (!name) continue
-        knownNames.add(name)
-        delayByName.set(name, n.delay)
-      }
-      // 仅在 listNodes 成功时 prune；失败时 known 为空，若 prune 会误清空全部分数
-      if (listNodesOk) pruneNodeScores(knownNames)
-      const badNames = this.repos.platformBadNodes.activeNodeNames(target.platformId)
-      const candidates = pickCandidateNodes(
-        nodes,
-        badNames,
-        nodeRetryMaxCandidates(firstError)
-      )
-      if (!candidates.length) {
-        return { outcome: 'fail', finalError: firstError }
-      }
-      log.debug('node rotation candidates', {
-        platformId: target.platformId,
-        token: target.token,
-        candidates,
-        delays: candidates.map((c) => ({ name: c, delay: delayByName.get(c) }))
-      })
-
-      const failedNodes: string[] = []
-      let lastError: unknown = firstError
-      try {
-        for (const node of candidates) {
-          if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
-          try {
-            await core.pinNode(node)
-          } catch (e) {
-            log.warn('pinNode failed, abort rotation', { node, err: String(e) })
-            break
-          }
-          this.progress(
-            jobId,
-            jobType,
-            'shop',
-            done,
-            total,
-            `node-retry ${target.platformId}:${target.token} via ${node}`
-          )
-          try {
-            const result = await attempt()
-            recordAttemptSuccess(node, { delay: delayByName.get(node) })
-            for (const badNode of failedNodes) {
-              this.repos.platformBadNodes.add({
-                platformId: target.platformId,
-                nodeName: badNode,
-                reason: `换节点后成功（${node}），此节点失败`,
-                ttlMs: PROXY_NODE_RETRY.badNodeTtlHours * 3_600_000
-              })
-            }
-            log.info('node rotation succeeded', {
-              platformId: target.platformId,
-              token: target.token,
-              node,
-              markedBad: failedNodes
-            })
-            return { outcome: 'ok', result }
-          } catch (err) {
-            if (err instanceof AppError && err.code === 'CANCELLED') throw err
-            lastError = err
-            if (!isNodeRetryableError(err)) {
-              // structural failure — node not to blame, stop rotating
-              return { outcome: 'fail', finalError: err }
-            }
-            if (err instanceof AppError && err.code === 'NEED_BROWSER') {
-              recordWafHit(node)
-            } else if (
-              err instanceof AppError &&
-              (err.code === 'NETWORK' || err.code === 'TIMEOUT')
-            ) {
-              recordAttemptFailure(node)
-            }
-            failedNodes.push(node)
-            log.info('node retry failed', {
-              platformId: target.platformId,
-              token: target.token,
-              node,
-              code: err instanceof AppError ? err.code : 'INTERNAL'
-            })
-          }
-        }
-      } finally {
-        try {
-          await core.unpinNode()
-        } catch (e) {
-          log.warn('unpinNode failed', { err: String(e) })
-        }
-      }
-      return { outcome: 'fail', finalError: lastError }
-    }
-
-    const scrapeOne = async (target: ShopScrapeTarget): Promise<'ok' | 'waf' | 'fail'> => {
+    for (const target of targets) {
       if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
       if (target.merchantId) {
         this.repos.merchants.setAppHealth(target.merchantId, 'retrying')
       } else {
         this.repos.merchants.setAppHealthByShopRef(target.platformId, target.token, 'retrying')
       }
-      const attempt = (): ReturnType<typeof scrapeShopTarget> =>
-        scrapeShopTarget({
+      this.progress(
+        jobId,
+        jobType,
+        'shop',
+        done,
+        total,
+        `scraping ${target.platformId}:${target.token} (${done + 1}/${total})`
+      )
+      try {
+        const result = await scrapeShopTarget({
           target,
           minIntervalMs,
           pageConcurrency,
           signal,
-          openSystemBrowserOnWaf,
           onProgress: (p) =>
             this.progress(
               jobId,
@@ -954,62 +696,83 @@ export class SyncOrchestrator {
               `${target.platformId}:${target.token}: ${p.current}/${p.total}`
             )
         })
-      try {
-        const result = await attempt()
-        if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
-        markOk(target, result)
-        return 'ok'
+        const source =
+          result.rows[0]?.source ??
+          findProfileById(target.platformId, SHOP_PROFILES)?.sourceId ??
+          target.platformId
+        this.repos.shopProducts.replaceForShop(source, target.token, result.rows)
+        if (target.merchantId) {
+          this.repos.merchants.setAppHealth(target.merchantId, 'healthy')
+          this.repos.merchants.relinkShopProducts(
+            target.platformId,
+            target.token,
+            target.merchantId
+          )
+        } else {
+          this.repos.merchants.setAppHealthByShopRef(target.platformId, target.token, 'healthy')
+        }
+        done += 1
+        this.progress(
+          jobId,
+          jobType,
+          'shop',
+          done,
+          total,
+          `ok ${target.platformId}:${target.token} (${done}/${total})`
+        )
       } catch (err) {
         if (err instanceof AppError && err.code === 'CANCELLED') throw err
-
-        const rotation = await rotateNodesAndRetry(target, err, attempt)
-        if (rotation.outcome === 'ok') {
-          if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
-          markOk(target, rotation.result)
-          return 'ok'
-        }
-        const finalError = rotation.finalError
-        if (finalError instanceof AppError && finalError.code === 'NEED_BROWSER') {
-          return 'waf'
-        }
-        markFail(target, finalError, 'fail')
-        return 'fail'
-      }
-    }
-
-    // Pass 1: scrape all; WAF → defer (manual: system browser may have opened)
-    for (let i = 0; i < targets.length; i++) {
-      const target = targets[i]!
-      this.progress(
-        jobId,
-        jobType,
-        'shop',
-        done,
-        total,
-        `scraping ${target.platformId}:${target.token} (${i + 1}/${total})`
-      )
-      const outcome = await scrapeOne(target)
-      if (outcome === 'waf') {
-        if (background) {
-          // 后台不同浏览器、不延后重试；标 failing 后自动池会排除
-          markFail(
-            target,
-            new AppError('NEED_BROWSER', '人机验证未通过（后台同步已跳过，请手动同步）', {
-              platformId: target.platformId,
-              token: target.token,
-              background: true
-            }),
-            'waf-bg-skip'
+        failed += 1
+        done += 1
+        const rawMessage = err instanceof Error ? err.message : String(err)
+        const code = err instanceof AppError ? err.code : 'INTERNAL'
+        const details = err instanceof AppError ? err.details : undefined
+        const message = formatErrorWithDetails(rawMessage, details)
+        const notFamily =
+          err instanceof AppError &&
+          err.code === 'SCHEMA_VALIDATION' &&
+          !!(err.details as { notFamily?: boolean } | undefined)?.notFamily
+        errors.push({
+          merchantId: target.merchantId,
+          platformId: target.platformId,
+          token: target.token,
+          message: notFamily ? `指纹不符: ${message}` : message,
+          code,
+          details
+        })
+        if (notFamily && target.merchantId) {
+          this.repos.merchants.clearShopRef(target.merchantId)
+        } else if (target.merchantId) {
+          this.repos.merchants.setAppHealth(target.merchantId, 'failing', message)
+        } else if (!notFamily) {
+          this.repos.merchants.setAppHealthByShopRef(
+            target.platformId,
+            target.token,
+            'failing',
+            message
           )
-          continue
         }
-        wafDeferred.push(target)
-        if (target.merchantId) {
-          this.repos.merchants.setAppHealth(
-            target.merchantId,
-            'retrying',
-            '人机验证：已开系统浏览器，本批末尾再试一次'
-          )
+        if (
+          target.merchantId &&
+          shouldBlockMerchantAfterSyncFailure({
+            enabled: this.repos.settings.get().blockOnShopSyncFail,
+            code,
+            notFamily,
+            merchantId: target.merchantId
+          })
+        ) {
+          const m = this.repos.merchants.getById(target.merchantId)
+          this.repos.blocklist.add({
+            targetType: 'merchant',
+            targetId: target.merchantId,
+            titleSnapshot: m?.name ?? `${target.platformId}:${target.token}`
+          })
+          log.info('auto-blocked merchant after shop sync fail', {
+            merchantId: target.merchantId,
+            platformId: target.platformId,
+            token: target.token,
+            code
+          })
         }
         this.progress(
           jobId,
@@ -1017,80 +780,40 @@ export class SyncOrchestrator {
           'shop',
           done,
           total,
-          `waf-defer ${target.platformId}:${target.token} (pending ${wafDeferred.length})`
+          `${notFamily ? 'not-family' : 'fail'} ${target.platformId}:${target.token} (${done}/${total})`
         )
-        log.info('shop WAF deferred', {
+        log.warn('shop scrape failed', {
           platformId: target.platformId,
           token: target.token,
-          deferred: wafDeferred.length
+          code,
+          message,
+          notFamily,
+          details
         })
       }
     }
 
-    // Pass 2: one retry for deferred WAF shops (no further defer)
-    if (wafDeferred.length && !signal.aborted) {
-      this.progress(
-        jobId,
-        jobType,
-        'shop',
-        done,
-        total,
-        `retrying ${wafDeferred.length} WAF-deferred shops`
-      )
-      log.info('WAF retry pass', { count: wafDeferred.length })
-      for (const target of wafDeferred) {
-        if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
-        this.progress(
-          jobId,
-          jobType,
-          'shop',
-          done,
-          total,
-          `waf-retry ${target.platformId}:${target.token}`
-        )
-        const outcome = await scrapeOne(target)
-        if (outcome === 'waf') {
-          markFail(
-            target,
-            new AppError('NEED_BROWSER', '人机验证仍未通过（已重试一次）', {
-              platformId: target.platformId,
-              token: target.token
-            }),
-            'waf-fail'
-          )
-        }
-      }
-    }
-
-    if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
-    const existing = this.repos.syncJobs.get(jobId)
-    if (existing && ['succeeded', 'failed', 'partial', 'cancelled'].includes(existing.status)) {
-      return
-    }
-
     const skippedNote = opts?.skippedFresh ? `, skipped ${opts.skippedFresh} fresh` : ''
-    const wafNote = wafDeferred.length ? `, wafDeferred ${wafDeferred.length}` : ''
+    const ok = total - failed
     const statusMessage =
       (failed === 0
-        ? `synced ${ok} shops`
-        : `synced ${ok}/${total} shops, ${failed} failed`) +
-      skippedNote +
-      wafNote
+        ? `synced ${total} shops`
+        : `synced ${ok}/${total} shops, ${failed} failed`) + skippedNote
     const finishedAt = new Date().toISOString()
-    const finalStatus = failed === 0 ? 'succeeded' : ok === 0 ? 'failed' : 'partial'
+    const finalStatus = failed === 0 ? 'succeeded' : failed === total ? 'failed' : 'partial'
+    const jobErrorCode = failed ? primaryErrorCode(errors) : null
     this.repos.syncJobs.update(jobId, {
       status: finalStatus,
       phase: 'done',
       current: total,
       total,
       message: statusMessage,
-      errorCode: failed ? 'NETWORK' : null,
+      errorCode: jobErrorCode,
       finishedAt,
       meta: {
         errors: errors.slice(0, 50),
         failed,
         ok,
-        wafDeferred: wafDeferred.length,
         skippedFresh: opts?.skippedFresh ?? 0,
         ...(opts?.extraMeta ?? {})
       }
@@ -1103,7 +826,7 @@ export class SyncOrchestrator {
       total,
       message: statusMessage,
       status: finalStatus,
-      errorCode: failed ? 'NETWORK' : undefined
+      errorCode: jobErrorCode ?? undefined
     })
     log.info('shop queue finished', { jobId, jobType, total, failed })
   }

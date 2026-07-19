@@ -57,10 +57,7 @@ export class IntervalLimiter {
 
 /**
  * Start-gap for paginated shop fetches so `concurrency` can actually fill
- * when limiting is still global (no per-node keys).
- *
- * Prefer {@link PerNodeIntervalLimiter} for proxy traffic: each node has its
- * own interval, so concurrency naturally fills across free nodes.
+ * when limiting is still global.
  */
 export function pageStartGapMs(minIntervalMs: number, concurrency: number): number {
   const interval = Math.max(0, Math.floor(minIntervalMs))
@@ -73,10 +70,10 @@ export function pageStartGapMs(minIntervalMs: number, concurrency: number): numb
 const FALLBACK_NODE_KEY = '*'
 
 /**
- * Per-key slot-reservation limiter (typically one key = one proxy node).
+ * Per-key slot-reservation limiter.
  *
- * Concurrent callers each synchronously claim the free-est key, so N nodes
- * allow up to N starts at once, while the same node stays spaced by intervalMs.
+ * Concurrent callers each synchronously claim the free-est key, so N keys
+ * allow up to N starts at once, while the same key stays spaced by intervalMs.
  */
 export class PerNodeIntervalLimiter {
   private readonly nextAt = new Map<string, number>()
@@ -148,7 +145,7 @@ function uniqueKeys(keys: readonly string[]): string[] {
   return out
 }
 
-/** Process-wide shop outbound limiter (per proxy node). */
+/** Process-wide shop outbound limiter. */
 let sharedShopNodeLimiter: PerNodeIntervalLimiter | null = null
 
 export function getShopNodeLimiter(intervalMs: number): PerNodeIntervalLimiter {

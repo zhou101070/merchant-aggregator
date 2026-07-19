@@ -1,6 +1,6 @@
 import { ipcRenderer } from 'electron'
 import { IPC_CHANNELS, type RendererApi } from '@shared/types/ipc'
-import type { SyncHttpRequestEntry, SyncProgressEvent } from '@shared/types/sync'
+import type { JobPoolSnapshot, SyncHttpRequestEntry, SyncProgressEvent } from '@shared/types/sync'
 
 export function createRendererApi(): RendererApi {
   return {
@@ -27,6 +27,7 @@ export function createRendererApi(): RendererApi {
       clearHistory: () => ipcRenderer.invoke(IPC_CHANNELS.syncClearHistory),
       listRequestLogs: () => ipcRenderer.invoke(IPC_CHANNELS.syncListRequestLogs),
       clearRequestLogs: () => ipcRenderer.invoke(IPC_CHANNELS.syncClearRequestLogs),
+      getPoolSnapshot: (jobId) => ipcRenderer.invoke(IPC_CHANNELS.syncGetPoolSnapshot, { jobId }),
       onProgress: (cb) => {
         const listener = (_event: Electron.IpcRendererEvent, payload: SyncProgressEvent): void => {
           cb(payload)
@@ -43,6 +44,13 @@ export function createRendererApi(): RendererApi {
         }
         ipcRenderer.on(IPC_CHANNELS.syncRequestLog, listener)
         return () => ipcRenderer.removeListener(IPC_CHANNELS.syncRequestLog, listener)
+      },
+      onPoolSnapshot: (cb) => {
+        const listener = (_event: Electron.IpcRendererEvent, payload: JobPoolSnapshot): void => {
+          cb(payload)
+        }
+        ipcRenderer.on(IPC_CHANNELS.syncPoolSnapshot, listener)
+        return () => ipcRenderer.removeListener(IPC_CHANNELS.syncPoolSnapshot, listener)
       }
     },
     favorites: {
@@ -65,6 +73,9 @@ export function createRendererApi(): RendererApi {
       get: () => ipcRenderer.invoke(IPC_CHANNELS.settingsGet),
       set: (p) => ipcRenderer.invoke(IPC_CHANNELS.settingsSet, p)
     },
+    data: {
+      clearAll: () => ipcRenderer.invoke(IPC_CHANNELS.dataClearAll)
+    },
     shell: {
       openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.shellOpenExternal, { url })
     },
@@ -83,15 +94,6 @@ export function createRendererApi(): RendererApi {
         ipcRenderer.on(IPC_CHANNELS.windowMaximized, listener)
         return () => ipcRenderer.removeListener(IPC_CHANNELS.windowMaximized, listener)
       }
-    },
-    proxyCore: {
-      status: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreStatus),
-      apply: (req) => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreApply, req),
-      detail: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreDetail),
-      setCallLogEnabled: (enabled) =>
-        ipcRenderer.invoke(IPC_CHANNELS.proxyCoreSetCallLog, { enabled }),
-      clearCallLogs: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreClearCallLogs),
-      clearBadNodes: () => ipcRenderer.invoke(IPC_CHANNELS.proxyCoreClearBadNodes)
     }
   }
 }

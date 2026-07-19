@@ -7,12 +7,8 @@ describe('DEFAULT_APP_SETTINGS', () => {
     expect(DEFAULT_APP_SETTINGS.networkPaused).toBe(false)
     expect(DEFAULT_APP_SETTINGS.shopFreshHours).toBe(24)
     expect(DEFAULT_APP_SETTINGS.requestIntervalMs).toBe(500)
-    expect(DEFAULT_APP_SETTINGS.shopPageConcurrency).toBe(3)
+    expect(DEFAULT_APP_SETTINGS.shopPageConcurrency).toBe(1)
     expect(DEFAULT_APP_SETTINGS.theme).toBe('system')
-    expect(DEFAULT_APP_SETTINGS.proxyCoreEnabled).toBe(false)
-    expect(DEFAULT_APP_SETTINGS.proxySubscriptionUrl).toBe('')
-    expect(DEFAULT_APP_SETTINGS.proxySubscriptions).toEqual([])
-    expect(DEFAULT_APP_SETTINGS.proxyCallLogEnabled).toBe(false)
     expect(DEFAULT_APP_SETTINGS.blockOnShopSyncFail).toBe(false)
     expect(DEFAULT_APP_SETTINGS.autoRefreshEnabled).toBe(false)
   })
@@ -29,7 +25,7 @@ describe('IPC_CHANNELS', () => {
 
 describe('schema / search defaults', () => {
   it('schema version is current', () => {
-    expect(DB_SCHEMA_VERSION).toBe(11)
+    expect(DB_SCHEMA_VERSION).toBe(12)
   })
 
   it('defaults search page size to 50', () => {

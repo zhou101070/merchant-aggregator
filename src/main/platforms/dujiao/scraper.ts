@@ -26,7 +26,10 @@ export async function scrapeDujiao(options: {
     host,
     baseUrl: options.baseUrl
   })
-  const client = new DujiaoClient(baseUrl, { minIntervalMs: options.minIntervalMs })
+  const client = new DujiaoClient(baseUrl, {
+    minIntervalMs: options.minIntervalMs,
+    signal: options.signal
+  })
 
   options.onProgress?.({ current: 0, total: 1, phase: 'config' })
   const config = await client.publicConfig()

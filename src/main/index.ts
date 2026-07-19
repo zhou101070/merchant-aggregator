@@ -15,11 +15,6 @@ import { registerIpcHandlers } from './ipc/register'
 import { SyncOrchestrator } from './services/sync-orchestrator'
 import { SearchService } from './services/search-service'
 import {
-  initProxyCoreService,
-  getProxyCoreService,
-  type ProxyCoreService
-} from './services/proxy-core-service'
-import {
   initAutoRefreshScheduler,
   getAutoRefreshScheduler,
   type AutoRefreshScheduler
@@ -43,7 +38,6 @@ let db: Database.Database | null = null
 let repos: Repositories | null = null
 let sync: SyncOrchestrator | null = null
 let search: SearchService | null = null
-let proxyCore: ProxyCoreService | null = null
 let autoRefresh: AutoRefreshScheduler | null = null
 
 /**
@@ -185,9 +179,8 @@ function initDatabase(): void {
   repos = createRepositories(db)
   sync = new SyncOrchestrator(repos)
   search = new SearchService(db)
-  proxyCore = initProxyCoreService(app.getPath('userData'))
   autoRefresh = initAutoRefreshScheduler(repos, sync)
-  registerIpcHandlers({ repos, sync, search, proxyCore, autoRefresh })
+  registerIpcHandlers({ db, repos, sync, search, autoRefresh })
   log.info('database ready', {
     filePath: opened.filePath,
     schemaVersion: opened.schemaVersion,
@@ -220,16 +213,6 @@ app.whenReady().then(() => {
 
   void ensureSystemProxy()
 
-  // Auto-start embedded proxy if user enabled it
-  const s = repos!.settings.get()
-  if (s.proxyCoreEnabled && s.proxySubscriptions.some((x) => x.enabled && x.url.trim())) {
-    void proxyCore!.apply({
-      enabled: true,
-      subscriptions: s.proxySubscriptions,
-      callLogEnabled: s.proxyCallLogEnabled
-    })
-  }
-
   // Background per-platform random shop refresh (runs for whole app lifetime)
   autoRefresh!.start()
 
@@ -248,12 +231,10 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   getAutoRefreshScheduler()?.stop()
-  void getProxyCoreService()?.stop()
   closeDatabase(db)
   db = null
   repos = null
   sync = null
   search = null
-  proxyCore = null
   autoRefresh = null
 })

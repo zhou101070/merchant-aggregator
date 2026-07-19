@@ -47,12 +47,7 @@ export interface SyncHttpRequestEntry {
   durationMs?: number
   status?: number | null
   error?: string | null
-  /**
-   * Outbound path label:
-   * - node name when pinned or resolved from mihomo connections
-   * - `MA-LB` while load-balancing / unresolved
-   * - `直连` when embedded proxy is off
-   */
+  /** Outbound path label for UI (currently always `直连`). */
   node: string
   phase: SyncHttpRequestPhase
 }
@@ -117,6 +112,60 @@ export interface SyncStartRequest {
    * 直到用户主动同步成功。
    */
   background?: boolean
+}
+
+/** 商家池条目状态（双池同步） */
+export type MerchantPoolStatus =
+  | 'queued'
+  | 'discovering'
+  | 'awaiting_waf'
+  | 'discovered'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+
+/** 商品组池条目状态 */
+export type GroupPoolStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface MerchantPoolItem {
+  id: string
+  jobId: string
+  merchantId: string | null
+  platformId: string
+  token: string
+  status: MerchantPoolStatus
+  message?: string
+  groupCount?: number
+  startedAt?: number
+  endedAt?: number
+}
+
+export interface ProductGroupPoolItem {
+  id: string
+  jobId: string
+  merchantPoolItemId: string
+  merchantId: string | null
+  platformId: string
+  token: string
+  /** shopApi: goodsType；整店族: '*' */
+  groupKey: string
+  status: GroupPoolStatus
+  message?: string
+  productCount?: number
+  startedAt?: number
+  endedAt?: number
+}
+
+export interface JobPoolSnapshot {
+  jobId: string
+  merchants: MerchantPoolItem[]
+  groups: ProductGroupPoolItem[]
+  caps: {
+    discoverConcurrency: number
+    requestBudget: number
+    startConsumeAt: number
+    maxOpenStores: number
+  }
 }
 
 const JOB_ALIAS: Record<string, SyncJobType> = {

@@ -1,198 +1,41 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { BlockedTarget } from '@shared/types/blocklist'
-import { AUTO_REFRESH_LIMITS, SHOP_API_LIMITS } from '@shared/constants'
-import type { ProxyCoreState, ProxyCoreStatus } from '@shared/types/proxy-core'
+import { AUTO_REFRESH_LIMITS } from '@shared/constants'
 import type { AppSettings, ThemeMode } from '@shared/types/settings'
-import {
-  isAllowedProxySubscriptionUrl,
-  newProxySubscriptionId,
-  PROXY_SUBSCRIPTIONS_MAX,
-  type ProxySubscription
-} from '@shared/types/proxy-subscription'
-import { Button, Empty, Input, Segmented, StatusDot, Switch, type Tone } from '../components/ui'
+import { Button, Empty, Segmented, Switch } from '../components/ui'
 import { PageHeader, PanelHeader } from '../components/layout'
 import { NumberField, SettingsRow } from '../components/settings-fields'
-import { ProxySubscriptionDialog } from '../components/proxy-subscription-dialog'
+import { useConfirm } from '../components/use-confirm'
 import { useToast } from '../components/use-toast'
+import { emitDataCleared } from '../lib/data-events'
 import { timeAgo } from '../lib/format-time'
-
-function proxyStateTone(state: ProxyCoreState): Tone {
-  if (state === 'running') return 'ok'
-  if (state === 'error') return 'fail'
-  if (state === 'starting') return 'warn'
-  return 'default'
-}
-
-function proxyStateLabel(state: ProxyCoreState): string {
-  switch (state) {
-    case 'running':
-      return '运行中'
-    case 'starting':
-      return '启动中'
-    case 'error':
-      return '异常'
-    case 'stopped':
-      return '已停止'
-    default:
-      return state
-  }
-}
+import { formatUserError } from '../lib/sync-labels'
 
 export function SettingsPage(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [diag, setDiag] = useState<Record<string, unknown> | null>(null)
   const [blocked, setBlocked] = useState<BlockedTarget[]>([])
-  const [proxyStatus, setProxyStatus] = useState<ProxyCoreStatus | null>(null)
-  const [proxyBusy, setProxyBusy] = useState(false)
-  const [detailOpen, setDetailOpen] = useState(false)
-  /** 新增订阅草稿：仅本地表单，点保存才写入 */
-  const [subDraft, setSubDraft] = useState<{
-    name: string
-    url: string
-    enabled: boolean
-  } | null>(null)
   const toast = useToast()
+  const confirm = useConfirm()
+  const [clearBusy, setClearBusy] = useState(false)
 
   const reloadBlocklist = useCallback(async (): Promise<void> => {
     setBlocked(await window.api.blocklist.list())
-  }, [])
-
-  const reloadProxy = useCallback(async (): Promise<void> => {
-    setProxyStatus(await window.api.proxyCore.status())
   }, [])
 
   useEffect(() => {
     void window.api.settings.get().then(setSettings)
     void window.api.diagnostics.get().then(setDiag)
     void reloadBlocklist()
-    void reloadProxy()
-  }, [reloadBlocklist, reloadProxy])
-
-  useEffect(() => {
-    if (!proxyStatus || (proxyStatus.state !== 'starting' && proxyStatus.state !== 'running')) return
-    const t = window.setInterval(() => void reloadProxy(), 2000)
-    return () => window.clearInterval(t)
-  }, [proxyStatus?.state, reloadProxy])
+  }, [reloadBlocklist])
 
   if (!settings) return <div className="muted">加载设置…</div>
-  const s = settings
 
   async function save(partial: Partial<AppSettings>): Promise<void> {
     const next = await window.api.settings.set(partial)
     setSettings(next)
     toast('已保存', 'ok')
     setDiag(await window.api.diagnostics.get())
-    if (
-      partial.proxyCoreEnabled !== undefined ||
-      partial.proxySubscriptionUrl !== undefined ||
-      partial.proxySubscriptions !== undefined ||
-      partial.proxyCallLogEnabled !== undefined
-    ) {
-      await reloadProxy()
-    }
-  }
-
-  async function saveSubs(subs: ProxySubscription[], toastMsg = '已保存'): Promise<void> {
-    const next = await window.api.settings.set({ proxySubscriptions: subs })
-    setSettings(next)
-    toast(toastMsg, 'ok')
-    await reloadProxy()
-  }
-
-  async function applyProxy(enabled: boolean): Promise<void> {
-    setProxyBusy(true)
-    try {
-      const status = await window.api.proxyCore.apply({
-        enabled,
-        subscriptions: s.proxySubscriptions,
-        callLogEnabled: s.proxyCallLogEnabled
-      })
-      setProxyStatus(status)
-      setSettings(await window.api.settings.get())
-      if (status.state === 'running') {
-        toast('代理内核已启动', 'ok')
-        if (status.tunLikely) {
-          toast('检测到 TUN，可能与内置代理冲突', 'warn')
-        }
-      } else if (status.state === 'error') toast(status.message, 'fail')
-      else if (!enabled) toast('代理内核已关闭', 'ok')
-      setDiag(await window.api.diagnostics.get())
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'fail')
-    } finally {
-      setProxyBusy(false)
-    }
-  }
-
-  function updateSub(id: string, patch: Partial<ProxySubscription>): void {
-    if (typeof patch.url === 'string') {
-      const url = patch.url.trim()
-      if (!url || !isAllowedProxySubscriptionUrl(url)) {
-        toast('订阅 URL 仅支持 http(s)://', 'warn')
-        void window.api.settings.get().then(setSettings)
-        return
-      }
-      patch = { ...patch, url }
-    }
-    const next = s.proxySubscriptions.map((row) =>
-      row.id === id ? { ...row, ...patch } : row
-    )
-    void saveSubs(next)
-  }
-
-  function removeSub(id: string): void {
-    void saveSubs(
-      s.proxySubscriptions.filter((row) => row.id !== id),
-      '已删除订阅'
-    )
-  }
-
-  function startAddSub(): void {
-    if (subDraft) return
-    if (s.proxySubscriptions.length >= PROXY_SUBSCRIPTIONS_MAX) {
-      toast(`最多 ${PROXY_SUBSCRIPTIONS_MAX} 个订阅`, 'warn')
-      return
-    }
-    setSubDraft({
-      name: `订阅 ${s.proxySubscriptions.length + 1}`,
-      url: '',
-      enabled: true
-    })
-  }
-
-  function cancelAddSub(): void {
-    setSubDraft(null)
-  }
-
-  async function commitAddSub(): Promise<void> {
-    if (!subDraft) return
-    const url = subDraft.url.trim()
-    if (!url) {
-      toast('请填写订阅 URL', 'warn')
-      return
-    }
-    if (!isAllowedProxySubscriptionUrl(url)) {
-      toast('订阅 URL 仅支持 http(s)://', 'warn')
-      return
-    }
-    if (s.proxySubscriptions.length >= PROXY_SUBSCRIPTIONS_MAX) {
-      toast(`最多 ${PROXY_SUBSCRIPTIONS_MAX} 个订阅`, 'warn')
-      return
-    }
-    const name = subDraft.name.trim() || `订阅 ${s.proxySubscriptions.length + 1}`
-    await saveSubs(
-      [
-        ...s.proxySubscriptions,
-        {
-          id: newProxySubscriptionId(),
-          name,
-          url,
-          enabled: subDraft.enabled
-        }
-      ],
-      '已保存订阅'
-    )
-    setSubDraft(null)
   }
 
   async function unblock(b: BlockedTarget): Promise<void> {
@@ -205,6 +48,32 @@ export function SettingsPage(): React.JSX.Element {
     const { deleted } = await window.api.blocklist.clear()
     toast(deleted ? `已清空 ${deleted} 条` : '名单为空', 'ok')
     await reloadBlocklist()
+  }
+
+  async function clearAllData(): Promise<void> {
+    if (clearBusy) return
+    if (
+      !(await confirm({
+        title: '清空全部业务数据',
+        body: '将删除商家、商品、收藏、最近浏览、屏蔽名单与同步任务历史。设置会保留。此操作不可撤销。',
+        confirmLabel: '确认清空',
+        danger: true
+      }))
+    ) {
+      return
+    }
+    setClearBusy(true)
+    try {
+      const res = await window.api.data.clearAll()
+      emitDataCleared()
+      await reloadBlocklist()
+      setDiag(await window.api.diagnostics.get())
+      toast(res.total ? `已清空 ${res.total} 条记录` : '没有可清空的数据', 'ok')
+    } catch (err) {
+      toast(formatUserError(err), 'fail')
+    } finally {
+      setClearBusy(false)
+    }
   }
 
   return (
@@ -230,47 +99,13 @@ export function SettingsPage(): React.JSX.Element {
 
         <div className="panel">
           <PanelHeader title="同步" />
-          <SettingsRow label="暂停所有网络同步" desc="打开后所有同步入口置灰；本地搜索与浏览不受影响">
-            <Switch
-              label="暂停所有网络同步"
-              checked={settings.networkPaused}
-              onChange={(v) => void save({ networkPaused: v })}
-            />
-          </SettingsRow>
-          <SettingsRow label="允许店铺深刮" desc="价格来源；关闭后不再访问发卡网，已同步数据保留">
-            <Switch
-              label="允许店铺深刮"
-              checked={settings.shopScrapeEnabled ?? settings.ldxpScrapeEnabled}
-              onChange={(v) => void save({ shopScrapeEnabled: v })}
-            />
-          </SettingsRow>
-          <SettingsRow label="PriceAI 请求间隔" desc="商家列表分页抓取的间隔">
-            <NumberField
-              value={settings.requestIntervalMs}
-              min={100}
-              onCommit={(v) => void save({ requestIntervalMs: v })}
-            />
-            <span className="unit">ms</span>
-          </SettingsRow>
-          <SettingsRow label="店铺最小间隔" desc="串行深刮相邻两店之间的最小间隔">
+          <SettingsRow label="店铺最小间隔" desc="深刮/刷新库存时，同一店内相邻两次 API 请求的最小间隔">
             <NumberField
               value={settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs}
               min={100}
               onCommit={(v) => void save({ shopMinIntervalMs: v })}
             />
             <span className="unit">ms</span>
-          </SettingsRow>
-          <SettingsRow
-            label="分页并发"
-            desc={`单店商品列表最多同时在途的页数；限流按代理节点分别计（每节点仍遵守店铺最小间隔）。无内置代理时退回全局间隔（${SHOP_API_LIMITS.pageConcurrency.min}–${SHOP_API_LIMITS.pageConcurrency.max}）`}
-          >
-            <NumberField
-              value={settings.shopPageConcurrency}
-              min={SHOP_API_LIMITS.pageConcurrency.min}
-              max={SHOP_API_LIMITS.pageConcurrency.max}
-              onCommit={(v) => void save({ shopPageConcurrency: v })}
-            />
-            <span className="unit">页</span>
           </SettingsRow>
           <SettingsRow
             label="旧数据阈值"
@@ -335,228 +170,6 @@ export function SettingsPage(): React.JSX.Element {
 
         <div className="panel">
           <PanelHeader
-            title="内置代理"
-            sub="mihomo 内核 · 每订阅一组 load-balance · 仅本机 mixed-port"
-          />
-          <SettingsRow
-            label="启用内置代理"
-            desc="开启后同步流量走本地内核；首次会下载 mihomo 到用户目录"
-          >
-            <Switch
-              label="启用内置代理"
-              checked={s.proxyCoreEnabled}
-              disabled={proxyBusy}
-              onChange={(v) => void applyProxy(v)}
-            />
-          </SettingsRow>
-          <SettingsRow
-            label="订阅列表"
-            desc={`每个 URL 为一组（最多 ${PROXY_SUBSCRIPTIONS_MAX}）；仅存本机`}
-          >
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <Button
-                type="button"
-                size="s"
-                variant="ghost"
-                disabled={proxyBusy || subDraft != null}
-                onClick={startAddSub}
-              >
-                添加订阅
-              </Button>
-              <Button
-                type="button"
-                size="s"
-                variant="ghost"
-                onClick={() => setDetailOpen(true)}
-              >
-                订阅详情
-              </Button>
-            </div>
-          </SettingsRow>
-          {s.proxySubscriptions.length === 0 && !subDraft ? (
-            <p className="proxy-sub-empty">尚未添加订阅。点击「添加订阅」填写后保存。</p>
-          ) : null}
-          <div className="proxy-sub-list">
-            {s.proxySubscriptions.map((row) => (
-              <div key={row.id} className="proxy-sub-card">
-                <div className="proxy-sub-card-row">
-                  <Input
-                    className="proxy-sub-name"
-                    value={row.name}
-                    disabled={proxyBusy}
-                    placeholder="名称"
-                    onChange={(e) => {
-                      const name = e.target.value
-                      setSettings({
-                        ...s,
-                        proxySubscriptions: s.proxySubscriptions.map((x) =>
-                          x.id === row.id ? { ...x, name } : x
-                        )
-                      })
-                    }}
-                    onBlur={(e) => {
-                      const name = e.target.value.trim() || row.name
-                      if (name !== row.name) updateSub(row.id, { name })
-                    }}
-                  />
-                  <Input
-                    className="proxy-sub-card-url"
-                    type="url"
-                    placeholder="https://… 订阅链接"
-                    value={row.url}
-                    disabled={proxyBusy}
-                    onChange={(e) => {
-                      const url = e.target.value
-                      setSettings({
-                        ...s,
-                        proxySubscriptions: s.proxySubscriptions.map((x) =>
-                          x.id === row.id ? { ...x, url } : x
-                        )
-                      })
-                    }}
-                    onBlur={(e) => {
-                      const url = e.target.value.trim()
-                      if (url !== row.url) updateSub(row.id, { url })
-                    }}
-                  />
-                  <div className="proxy-sub-card-actions">
-                    <label className="proxy-sub-enable">
-                      <span>启用</span>
-                      <Switch
-                        label="启用"
-                        checked={row.enabled}
-                        disabled={proxyBusy}
-                        onChange={(v) => updateSub(row.id, { enabled: v })}
-                      />
-                    </label>
-                    <Button
-                      type="button"
-                      size="s"
-                      variant="danger"
-                      disabled={proxyBusy}
-                      onClick={() => removeSub(row.id)}
-                    >
-                      删除
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ))}
-            {subDraft ? (
-              <div className="proxy-sub-card is-draft">
-                <p className="proxy-sub-card-hint">新订阅（未保存）</p>
-                <div className="proxy-sub-card-row">
-                  <Input
-                    className="proxy-sub-name"
-                    value={subDraft.name}
-                    disabled={proxyBusy}
-                    placeholder="名称"
-                    onChange={(e) => setSubDraft({ ...subDraft, name: e.target.value })}
-                  />
-                  <Input
-                    className="proxy-sub-card-url"
-                    type="url"
-                    placeholder="https://… 订阅链接"
-                    value={subDraft.url}
-                    disabled={proxyBusy}
-                    autoFocus
-                    onChange={(e) => setSubDraft({ ...subDraft, url: e.target.value })}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        void commitAddSub()
-                      }
-                    }}
-                  />
-                  <div className="proxy-sub-card-actions">
-                    <label className="proxy-sub-enable">
-                      <span>启用</span>
-                      <Switch
-                        label="启用"
-                        checked={subDraft.enabled}
-                        disabled={proxyBusy}
-                        onChange={(v) => setSubDraft({ ...subDraft, enabled: v })}
-                      />
-                    </label>
-                    <Button
-                      type="button"
-                      size="s"
-                      variant="primary"
-                      disabled={proxyBusy}
-                      onClick={() => void commitAddSub()}
-                    >
-                      保存
-                    </Button>
-                    <Button
-                      type="button"
-                      size="s"
-                      variant="ghost"
-                      disabled={proxyBusy}
-                      onClick={cancelAddSub}
-                    >
-                      取消
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-          </div>
-          <div className="proxy-status-bar">
-            <div className="proxy-status-main">
-              {proxyStatus ? (
-                <>
-                  <div className="proxy-status-line">
-                    <StatusDot tone={proxyStateTone(proxyStatus.state)}>
-                      {proxyStateLabel(proxyStatus.state)}
-                    </StatusDot>
-                    {proxyStatus.proxyUrl ? (
-                      <span className="proxy-status-chip mono" title="本地出口">
-                        {proxyStatus.proxyUrl.replace(/^https?:\/\//, '')}
-                      </span>
-                    ) : null}
-                    {proxyStatus.groupCount > 0 ? (
-                      <span className="proxy-status-chip">{proxyStatus.groupCount} 组</span>
-                    ) : null}
-                  </div>
-                  {proxyStatus.message ? (
-                    <p className="proxy-status-msg">{proxyStatus.message}</p>
-                  ) : null}
-                </>
-              ) : (
-                <span className="small muted">加载状态…</span>
-              )}
-              {proxyStatus?.tunLikely ? (
-                <p className="proxy-status-tun">
-                  检测到 TUN
-                  {proxyStatus.tunInterfaces?.length
-                    ? `（${proxyStatus.tunInterfaces.join(', ')}）`
-                    : ''}
-                  ，可能与内置代理冲突。建议关闭 TUN，或将本应用加入绕过。
-                </p>
-              ) : null}
-            </div>
-            <Button
-              size="s"
-              variant="primary"
-              disabled={proxyBusy}
-              onClick={() => void applyProxy(true)}
-            >
-              {proxyBusy ? '处理中…' : '应用'}
-            </Button>
-          </div>
-        </div>
-
-        {detailOpen ? (
-          <ProxySubscriptionDialog
-            onClose={() => setDetailOpen(false)}
-            onCallLogChange={(enabled) => {
-              setSettings((prev) => (prev ? { ...prev, proxyCallLogEnabled: enabled } : prev))
-            }}
-          />
-        ) : null}
-
-        <div className="panel">
-          <PanelHeader
             title="屏蔽名单"
             sub={
               <>
@@ -606,6 +219,23 @@ export function SettingsPage(): React.JSX.Element {
               </tbody>
             </table>
           )}
+        </div>
+
+        <div className="panel">
+          <PanelHeader title="数据" />
+          <SettingsRow
+            label="清空业务数据"
+            desc="删除商家、商品、收藏、最近浏览、屏蔽名单与同步历史；设置保留。同步进行中时不可清空。"
+          >
+            <Button
+              variant="danger"
+              size="s"
+              disabled={clearBusy}
+              onClick={() => void clearAllData()}
+            >
+              {clearBusy ? '清空中…' : '一键清空'}
+            </Button>
+          </SettingsRow>
         </div>
 
         <div className="panel diag">

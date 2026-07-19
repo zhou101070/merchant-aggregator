@@ -24,23 +24,23 @@ const PHASE_LABEL: Record<string, string> = {
   cancelled: '取消'
 }
 
-/** 错误码 → 用户可执行的提示；未知码原样返回 */
+/** 错误码 → 简短用户文案 */
 const ERROR_HINT: Record<string, string> = {
-    NEED_BROWSER:
-      '店铺人机验证：已用系统浏览器打开并延后重试；若本批末尾再试仍失败则标记失败。可关内置代理后手动再同步',
-  NETWORK:
-    '网络错误：连不上目标站（常见于代理/DNS fake-ip）。可先在浏览器打开该店确认可访问，并检查系统代理',
-  TIMEOUT: '请求超时，稍后重试',
-  RATE_LIMIT: '触发限流，建议调大请求间隔后重试',
-  DEGRADED: '上游服务降级，稍后重试',
-  SCHEMA_VALIDATION: '上游返回了意外格式，站点可能已改版',
+  NEED_BROWSER: '店铺需要人机验证，请先在浏览器打开该店后再试',
+  NETWORK: '网络连接失败，请检查网络或代理后重试',
+  TIMEOUT: '请求超时，请稍后重试',
+  RATE_LIMIT: '请求太频繁，请调大间隔后重试',
+  DEGRADED: '服务暂时不可用，请稍后重试',
+  SCHEMA_VALIDATION: '店铺数据异常，站点可能已改版',
   CANCELLED: '已取消',
-  SYNC_LOCKED: '已有同类同步在进行中，等它结束或先取消',
-  PAUSED: '同步已暂停（设置关闭，或该平台尚未启用）',
-  NOT_FOUND: '找不到目标：商家不存在或缺少可刮店铺信息',
-  INVALID_URL: '链接不合法或未注册的店铺域名',
-  INTERNAL: '内部错误，请查看日志'
+  SYNC_LOCKED: '已有同步任务进行中',
+  PAUSED: '该平台未启用深刮',
+  NOT_FOUND: '找不到对应商家或商品',
+  INVALID_URL: '链接无效',
+  INTERNAL: '出错了，请稍后重试'
 }
+
+const CODE_PREFIX = /^([A-Z][A-Z0-9_]+):\s*/
 
 export function jobTypeLabel(jobType?: string | null): string {
   if (!jobType) return '任务'
@@ -54,7 +54,61 @@ export function phaseLabel(phase?: string | null): string {
 
 export function errorHint(code?: string | null): string | null {
   if (!code) return null
-  return ERROR_HINT[code] ?? code
+  return ERROR_HINT[code] ?? null
+}
+
+/** IPC / catch 到的错误 → 用户可读文案 */
+export function formatUserError(err: unknown): string {
+  const raw = (err instanceof Error ? err.message : String(err ?? '')).trim()
+  if (!raw) return ERROR_HINT.INTERNAL
+
+  const m = raw.match(CODE_PREFIX)
+  if (m) {
+    const hint = ERROR_HINT[m[1]]
+    if (hint) return hint
+  }
+  if (ERROR_HINT[raw]) return ERROR_HINT[raw]
+  return ERROR_HINT.INTERNAL
+}
+
+/** 任务摘要：英文 progress 转中文；技术句用错误码文案兜底 */
+export function formatJobUserMessage(job: {
+  message?: string | null
+  errorCode?: string | null
+  status?: string | null
+}): string {
+  const msg = (job.message || '').trim()
+  const hint = errorHint(job.errorCode)
+
+  if (msg === 'starting') return '启动中'
+  if (msg === 'cancelled by user') return '已取消'
+
+  const allOk = msg.match(/^synced (\d+) shops(?:, skipped (\d+) fresh)?$/)
+  if (allOk) {
+    return allOk[2] ? `已同步 ${allOk[1]} 家店，跳过 ${allOk[2]} 家` : `已同步 ${allOk[1]} 家店`
+  }
+
+  const partial = msg.match(/^synced (\d+)\/(\d+) shops, (\d+) failed(?:, skipped (\d+) fresh)?$/)
+  if (partial) {
+    const base = `成功 ${partial[1]}/${partial[2]} 家，失败 ${partial[3]} 家`
+    return partial[4] ? `${base}，跳过 ${partial[4]} 家` : base
+  }
+
+  // 进行中：ok/fail platform:token (n/m)
+  const shopStep = msg.match(/^(ok|fail|not-family)\s+\S+\s+\((\d+)\/(\d+)\)$/)
+  if (shopStep) {
+    const label =
+      shopStep[1] === 'ok' ? '完成' : shopStep[1] === 'not-family' ? '指纹不符' : '失败'
+    return `${label} ${shopStep[2]}/${shopStep[3]}`
+  }
+
+  if (hint) return hint
+  if (!msg) return ''
+  // 仍是开发向英文则兜底
+  if (/^[a-zA-Z0-9_ .:/\-(),]+$/.test(msg) && /[a-z]/.test(msg)) {
+    return ERROR_HINT.INTERNAL
+  }
+  return msg
 }
 
 /** 按已完成比例估算剩余时间；非运行中/数据不足返回 null */
@@ -82,12 +136,13 @@ export function formatSyncProgress(job: {
   message?: string | null
   startedAt?: string | null
   status?: string | null
+  errorCode?: string | null
 }): string {
   const type = jobTypeLabel(job.jobType)
   const phase = phaseLabel(job.phase)
   const cur = job.current ?? 0
   const tot = job.total ?? 0
-  const msg = (job.message || '').trim()
+  const msg = formatJobUserMessage(job)
   const progress = tot > 0 ? `${cur}/${tot}` : cur > 0 ? `${cur}` : ''
   const eta = formatEta(job)
   return [type, phase, progress, msg, eta].filter(Boolean).join(' · ')

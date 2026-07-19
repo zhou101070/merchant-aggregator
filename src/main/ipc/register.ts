@@ -9,6 +9,7 @@ import type { RefreshStockRequest, ShopProductListQuery } from '@shared/types/pr
 import type { SearchQuery } from '@shared/types/search'
 import type { AppSettings } from '@shared/types/settings'
 import type { SyncJobListQuery, SyncStartRequest } from '@shared/types/sync'
+import type Database from 'better-sqlite3'
 import type { Repositories } from '../db/repositories'
 import type { SyncOrchestrator } from '../services/sync-orchestrator'
 import type { SearchService } from '../services/search-service'
@@ -17,17 +18,17 @@ import { clearSyncHttpRequests, listSyncHttpRequests } from '../services/sync-re
 import { createLogger } from '../utils/logger'
 import { evaluateOpenExternal } from '../utils/url-safety'
 import { resolveUserDataDbPath } from '../db/connection'
+import { clearAppData } from '../db/clear-app-data'
 import { applyThemeSource } from '../theme'
-import type { ProxyCoreService } from '../services/proxy-core-service'
 import type { AutoRefreshScheduler } from '../services/auto-refresh-scheduler'
 
 const log = createLogger('ipc')
 
 export interface IpcContext {
+  db: Database.Database
   repos: Repositories
   sync: SyncOrchestrator
   search: SearchService
-  proxyCore: ProxyCoreService | null
   autoRefresh: AutoRefreshScheduler | null
 }
 
@@ -105,6 +106,9 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     clearSyncHttpRequests()
     return { ok: true as const }
   })
+  ipcMain.handle(IPC_CHANNELS.syncGetPoolSnapshot, async (_e, req: { jobId: string }) =>
+    ctx.sync.getPoolSnapshot(req.jobId)
+  )
 
   ipcMain.handle(IPC_CHANNELS.favoritesList, async () => ctx.repos.favorites.list())
   ipcMain.handle(
@@ -153,153 +157,30 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC_CHANNELS.blocklistClear, async () => ctx.repos.blocklist.clear())
 
   ipcMain.handle(IPC_CHANNELS.settingsGet, async () => ctx.repos.settings.get())
+  ipcMain.handle(IPC_CHANNELS.dataClearAll, async () => {
+    const running = ctx.sync.getStatus().running
+    if (running.length > 0) {
+      throw new AppError('SYNC_LOCKED', '有同步任务进行中，请先取消或等待完成后再清空数据')
+    }
+    const result = clearAppData(ctx.db)
+    log.info('app data cleared', { total: result.total, deleted: result.deleted })
+    return result
+  })
   ipcMain.handle(IPC_CHANNELS.settingsSet, async (_e, partial: Partial<AppSettings>) => {
     const next = ctx.repos.settings.set(partial)
     if (partial.theme !== undefined) {
       applyThemeSource(next.theme)
     }
     if (
-      ctx.proxyCore &&
-      (partial.proxyCoreEnabled !== undefined ||
-        partial.proxySubscriptionUrl !== undefined ||
-        partial.proxySubscriptions !== undefined)
-    ) {
-      void ctx.proxyCore.apply({
-        enabled: next.proxyCoreEnabled,
-        subscriptions: next.proxySubscriptions,
-        callLogEnabled: next.proxyCallLogEnabled
-      })
-    } else if (ctx.proxyCore && partial.proxyCallLogEnabled !== undefined) {
-      ctx.proxyCore.setCallLogEnabled(next.proxyCallLogEnabled)
-    }
-    if (
       ctx.autoRefresh &&
       (partial.autoRefreshEnabled !== undefined ||
         partial.autoRefreshMinIntervalMs !== undefined ||
         partial.autoRefreshMaxIntervalMs !== undefined ||
-        partial.networkPaused !== undefined ||
-        partial.shopScrapeEnabled !== undefined ||
-        partial.ldxpScrapeEnabled !== undefined ||
         partial.shopFreshHours !== undefined)
     ) {
       ctx.autoRefresh.reschedule()
     }
     return next
-  })
-
-  ipcMain.handle(IPC_CHANNELS.proxyCoreStatus, async () => {
-    if (!ctx.proxyCore) {
-      return {
-        state: 'stopped' as const,
-        enabled: false,
-        proxyUrl: null,
-        mixedPort: null,
-        controllerPort: null,
-        message: '不可用',
-        binaryReady: false,
-        hasSubscription: false,
-        tunLikely: false,
-        tunInterfaces: [] as string[],
-        groupCount: 0,
-        callLogEnabled: false,
-        callLogCount: 0
-      }
-    }
-    return ctx.proxyCore.status()
-  })
-
-  ipcMain.handle(
-    IPC_CHANNELS.proxyCoreApply,
-    async (
-      _e,
-      req: {
-        enabled: boolean
-        subscriptions?: unknown
-        callLogEnabled?: boolean
-      }
-    ) => {
-      if (!ctx.proxyCore) {
-        throw new AppError('INTERNAL', 'proxy core not initialized')
-      }
-      const enabled = Boolean(req?.enabled)
-      const patch: Partial<AppSettings> = {
-        proxyCoreEnabled: enabled,
-        proxySubscriptions: Array.isArray(req?.subscriptions)
-          ? (req.subscriptions as AppSettings['proxySubscriptions'])
-          : ctx.repos.settings.get().proxySubscriptions
-      }
-      if (typeof req?.callLogEnabled === 'boolean') {
-        patch.proxyCallLogEnabled = req.callLogEnabled
-      }
-      const next = ctx.repos.settings.set(patch)
-      return ctx.proxyCore.apply({
-        enabled: next.proxyCoreEnabled,
-        subscriptions: next.proxySubscriptions,
-        callLogEnabled: next.proxyCallLogEnabled
-      })
-    }
-  )
-
-  ipcMain.handle(IPC_CHANNELS.proxyCoreDetail, async () => {
-    if (!ctx.proxyCore) {
-      return {
-        status: {
-          state: 'stopped' as const,
-          enabled: false,
-          proxyUrl: null,
-          mixedPort: null,
-          controllerPort: null,
-          message: '不可用',
-          binaryReady: false,
-          hasSubscription: false,
-          tunLikely: false,
-          tunInterfaces: [] as string[],
-          groupCount: 0,
-          callLogEnabled: false,
-          callLogCount: 0
-        },
-        groups: [],
-        callLogs: [],
-        callLogEnabled: false,
-        badNodes: []
-      }
-    }
-    const detail = await ctx.proxyCore.getDetail()
-    ctx.repos.platformBadNodes.purgeExpired()
-    return {
-      ...detail,
-      badNodes: ctx.repos.platformBadNodes.listActive().map((n) => ({
-        platformId: n.platformId,
-        nodeName: n.nodeName,
-        reason: n.reason,
-        expiresAt: n.expiresAt
-      }))
-    }
-  })
-
-  ipcMain.handle(
-    IPC_CHANNELS.proxyCoreSetCallLog,
-    async (_e, req: { enabled: boolean }) => {
-      if (!ctx.proxyCore) {
-        throw new AppError('INTERNAL', 'proxy core not initialized')
-      }
-      const enabled = Boolean(req?.enabled)
-      ctx.repos.settings.set({ proxyCallLogEnabled: enabled })
-      return ctx.proxyCore.setCallLogEnabled(enabled)
-    }
-  )
-
-  ipcMain.handle(IPC_CHANNELS.proxyCoreClearCallLogs, async () => {
-    if (!ctx.proxyCore) {
-      return { ok: true as const, callLogs: [] as const }
-    }
-    ctx.proxyCore.clearCallLogs()
-    return { ok: true as const, callLogs: ctx.proxyCore.getCallLogs() }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.proxyCoreClearBadNodes, async () => {
-    ctx.repos.platformBadNodes.clear()
-    return { ok: true as const }
   })
 
   ipcMain.handle(IPC_CHANNELS.shellOpenExternal, async (_e, req: { url: string }) => {
@@ -313,23 +194,13 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   ipcMain.handle(IPC_CHANNELS.diagnosticsGet, async () => {
     const status = ctx.sync.getStatus()
-    const proxy = ctx.proxyCore?.status()
     return {
       counts: status.counts,
       lastSuccessAt: status.lastSuccessAt,
       schemaVersion: DB_SCHEMA_VERSION,
       dbPath: resolveUserDataDbPath(app.getPath('userData')),
       version: app.getVersion(),
-      networkPaused: ctx.repos.settings.get().networkPaused,
       priceSource: 'ldxp_shop_products',
-      proxyCore: proxy
-        ? {
-            state: proxy.state,
-            mixedPort: proxy.mixedPort,
-            message: proxy.message,
-            binaryReady: proxy.binaryReady
-          }
-        : null,
       autoRefresh: ctx.autoRefresh?.status() ?? null
     }
   })

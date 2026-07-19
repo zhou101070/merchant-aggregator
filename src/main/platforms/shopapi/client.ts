@@ -5,15 +5,13 @@ import { resolveShopApiEndpoints, shopRootUrl } from '@shared/platforms/shop-typ
 import { SHOP_API_LIMITS } from '@shared/constants'
 import { createLogger } from '../../utils/logger'
 import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
-import { getShopNodeLimiter } from '../../services/rate-limiter'
-import { getProxyCoreService } from '../../services/proxy-core-service'
+import { IntervalLimiter } from '../../services/rate-limiter'
 import {
   browserCorsApiHeaders,
   browserDocumentHeaders,
   resolveRequestUserAgent
 } from '../../utils/request-headers'
 import { isShopApiChallengeResponse } from './challenge'
-import { ShopPageSession } from './browser-session'
 
 const log = createLogger('shopapi')
 
@@ -45,75 +43,23 @@ export interface ShopApiGoodsItem {
 
 /**
  * Parameterized shopApi-family HTTP client.
- * Prefer page-context fetch (real shop tab) so WAF sees browser-like traffic.
- * Fallback: mainFetch with cookie jar (tests / no Electron).
+ * All host/path/Origin/Referer come from ShopSiteProfile — no host if-branches.
  */
 export class ShopApiClient {
   private readonly profile: ShopSiteProfile
   private readonly visitorId: string
   private readonly cookieJar = new Map<string, string>()
   private readonly ua: string
-  private readonly minIntervalMs: number
-  private readonly signal?: AbortSignal
-  private readonly openSystemBrowserOnWaf: boolean
-  private pageSession: ShopPageSession | null = null
-  /** Prefer in-page fetch after successful browser open */
-  private usePageFetch = false
+  private readonly limiter: IntervalLimiter
 
   constructor(
     profile: ShopSiteProfile,
-    options?: {
-      visitorId?: string
-      userAgent?: string
-      minIntervalMs?: number
-      signal?: AbortSignal
-      /** default true；后台自动刷新传 false */
-      openSystemBrowserOnWaf?: boolean
-    }
+    options?: { visitorId?: string; userAgent?: string; minIntervalMs?: number }
   ) {
     this.profile = profile
     this.visitorId = options?.visitorId ?? createVisitorId()
     this.ua = resolveRequestUserAgent(options?.userAgent)
-    this.minIntervalMs = options?.minIntervalMs ?? profile.defaultMinIntervalMs
-    this.signal = options?.signal
-    this.openSystemBrowserOnWaf = options?.openSystemBrowserOnWaf !== false
-  }
-
-  private throwIfAborted(): void {
-    if (this.signal?.aborted) {
-      throw new AppError('CANCELLED', 'shop scrape cancelled', { platformId: this.profile.id })
-    }
-  }
-
-  /**
-   * Per-proxy-node start spacing (shared process-wide).
-   * Pinned → only that node; else reserve the free-est known node slot.
-   */
-  private async waitTurn(): Promise<void> {
-    this.throwIfAborted()
-    try {
-      const limiter = getShopNodeLimiter(this.minIntervalMs)
-      const keys = await this.resolveLimiterNodeKeys()
-      await limiter.acquire(keys, this.signal)
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'shop scrape cancelled', { platformId: this.profile.id })
-      }
-      throw err
-    }
-    this.throwIfAborted()
-  }
-
-  private async resolveLimiterNodeKeys(): Promise<string[]> {
-    const core = getProxyCoreService()
-    if (!core || core.status().state !== 'running') return []
-    const pinned = core.currentPinnedNode()
-    if (pinned) return [pinned]
-    try {
-      return await core.listNodeNamesCached()
-    } catch {
-      return []
-    }
+    this.limiter = new IntervalLimiter(options?.minIntervalMs ?? profile.defaultMinIntervalMs)
   }
 
   get baseUrl(): string {
@@ -122,15 +68,6 @@ export class ShopApiClient {
 
   get platformId(): string {
     return this.profile.id
-  }
-
-  /** Close Chromium shop tab (call after scrape). */
-  async dispose(): Promise<void> {
-    this.usePageFetch = false
-    if (this.pageSession) {
-      await this.pageSession.close()
-      this.pageSession = null
-    }
   }
 
   private absorbSetCookie(res: Response): void {
@@ -160,12 +97,6 @@ export class ShopApiClient {
     return [...this.cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
   }
 
-  importCookies(cookies: Array<{ name: string; value: string }>): void {
-    for (const c of cookies) {
-      if (c.name) this.cookieJar.set(c.name, c.value)
-    }
-  }
-
   private assertNotChallenge(status: number, text: string, path: string): void {
     if (isShopApiChallengeResponse(status, text)) {
       throw new AppError('NEED_BROWSER', 'shop challenge / WAF intercepted request', {
@@ -177,71 +108,12 @@ export class ShopApiClient {
     }
   }
 
-  private parseShopData<T>(path: string, status: number, text: string): T {
-    if (!text.trim()) {
-      throw new AppError('NETWORK', 'shop empty response body', {
-        path,
-        status,
-        platformId: this.profile.id
-      })
-    }
-    this.assertNotChallenge(status, text, path)
-    if (status === 0) {
-      throw new AppError('NETWORK', `shop page fetch failed: ${text.slice(0, 120)}`, {
-        path,
-        platformId: this.profile.id
-      })
-    }
-    if (status < 200 || status >= 300) {
-      throw new AppError('NETWORK', `shop HTTP ${status}`, {
-        path,
-        status,
-        platformId: this.profile.id,
-        snippet: text.slice(0, 200)
-      })
-    }
-
-    let json: { code?: number; msg?: string; data?: T }
-    try {
-      json = JSON.parse(text) as { code?: number; msg?: string; data?: T }
-    } catch {
-      throw new AppError('NETWORK', 'shop non-JSON response body', {
-        path,
-        platformId: this.profile.id,
-        snippet: text.slice(0, 200)
-      })
-    }
-    if (json.code !== 1) {
-      throw new AppError('NETWORK', json.msg || `shop code=${json.code}`, {
-        path,
-        code: json.code,
-        platformId: this.profile.id
-      })
-    }
-    return json.data as T
-  }
-
-  private async postJsonViaPage<T>(
-    path: string,
-    body: Record<string, unknown>
-  ): Promise<T> {
-    if (!this.pageSession?.isOpen) {
-      throw new AppError('INTERNAL', 'page session missing')
-    }
-    await this.waitTurn()
-    this.throwIfAborted()
-    const { status, text } = await this.pageSession.postJson(path, body, this.visitorId)
-    this.throwIfAborted()
-    return this.parseShopData<T>(path, status, text)
-  }
-
-  private async postJsonViaMainFetch<T>(
+  private async postJson<T>(
     path: string,
     body: Record<string, unknown>,
     token: string
   ): Promise<T> {
-    await this.waitTurn()
-    this.throwIfAborted()
+    await this.limiter.waitTurn()
     const url = `${this.profile.baseUrl}${path}`
     const headers = browserCorsApiHeaders({
       userAgent: this.ua,
@@ -269,116 +141,78 @@ export class ShopApiClient {
 
     this.absorbSetCookie(res)
     const text = await res.text()
-    return this.parseShopData<T>(path, res.status, text)
-  }
 
-  private async postJson<T>(
-    path: string,
-    body: Record<string, unknown>,
-    token: string
-  ): Promise<T> {
-    if (this.usePageFetch && this.pageSession?.isOpen) {
-      return await this.postJsonViaPage<T>(path, body)
-    }
-    return await this.postJsonViaMainFetch<T>(path, body, token)
-  }
-
-  private async openShopTab(token: string): Promise<void> {
-    this.throwIfAborted()
-    const shopUrl = shopRootUrl(this.profile, token)
-    if (!this.pageSession) this.pageSession = new ShopPageSession()
-    let cleared: boolean
-    let mode: 'auto' | 'system_browser'
-    try {
-      ;({ cleared, mode } = await this.pageSession.open({
-        shopUrl,
-        userAgent: this.ua,
-        openSystemBrowserOnWaf: this.openSystemBrowserOnWaf,
-        signal: this.signal
-      }))
-    } catch (err) {
-      if (
-        this.signal?.aborted ||
-        (err instanceof Error && err.name === 'AbortError')
-      ) {
-        throw new AppError('CANCELLED', 'shop scrape cancelled', {
-          platformId: this.profile.id
-        })
-      }
-      throw err
-    }
-    this.throwIfAborted()
-    const cookies = await this.pageSession.readCookies()
-    this.importCookies(cookies)
-    this.usePageFetch = this.pageSession.isOpen
-    log.info('shop tab opened for API', {
-      platformId: this.profile.id,
-      cleared,
-      mode,
-      usePageFetch: this.usePageFetch,
-      cookies: cookies.map((c) => c.name)
-    })
-    if (!cleared) {
-      // Queue will scrape other shops first, then retry once
-      throw new AppError('NEED_BROWSER', 'shop WAF — deferred for later retry', {
-        platformId: this.profile.id,
-        mode,
-        shopUrl,
-        deferrable: true
-      })
-    }
-    if (!this.usePageFetch) {
-      throw new AppError('NEED_BROWSER', 'could not open shop page session', {
-        platformId: this.profile.id,
-        shopUrl,
-        deferrable: true
-      })
-    }
-  }
-
-  /**
-   * Always open a real shop tab first (browser path that does not trip WAF),
-   * then use in-page fetch for APIs. Falls back to mainFetch-only if Electron missing.
-   */
-  async warmup(token: string): Promise<void> {
-    try {
-      await this.openShopTab(token)
-      return
-    } catch (err) {
-      if (err instanceof AppError && err.code === 'CANCELLED') throw err
-      log.warn('browser session warmup failed; trying mainFetch', {
-        err: String(err),
+    // Empty body after TLS (seen on some white-labels under WAF) → NETWORK
+    if (!text.trim()) {
+      throw new AppError('NETWORK', 'shop empty response body', {
+        path,
+        status: res.status,
         platformId: this.profile.id
       })
     }
 
-    // Fallback (vitest / headless without window)
-    await this.waitTurn()
+    this.assertNotChallenge(res.status, text, path)
+
+    if (!res.ok) {
+      throw new AppError('NETWORK', `shop HTTP ${res.status}`, {
+        path,
+        status: res.status,
+        platformId: this.profile.id,
+        snippet: text.slice(0, 200)
+      })
+    }
+
+    let json: { code?: number; msg?: string; data?: T }
     try {
-      this.throwIfAborted()
-      const shopUrl = shopRootUrl(this.profile, token)
-      const res = await mainFetch(shopUrl, {
+      json = JSON.parse(text) as { code?: number; msg?: string; data?: T }
+    } catch {
+      // Design R1: empty/non-JSON body treated as network/WAF class, not schema rewrite
+      throw new AppError('NETWORK', 'shop non-JSON response body', {
+        path,
+        platformId: this.profile.id,
+        snippet: text.slice(0, 200)
+      })
+    }
+    if (json.code !== 1) {
+      throw new AppError('NETWORK', json.msg || `shop code=${json.code}`, {
+        path,
+        code: json.code,
+        platformId: this.profile.id
+      })
+    }
+    return json.data as T
+  }
+
+  async warmup(token: string): Promise<void> {
+    await this.limiter.waitTurn()
+    try {
+      const res = await mainFetch(shopRootUrl(this.profile, token), {
         headers: browserDocumentHeaders({
           userAgent: this.ua,
-          visitorId: this.visitorId,
-          cookie: this.cookieHeader()
+          visitorId: this.visitorId
         })
       })
       this.absorbSetCookie(res)
       const text = await res.text()
       if (!text.trim()) {
+        log.warn('warmup empty body', { platformId: this.profile.id, status: res.status })
         throw new AppError('NETWORK', 'shop empty response during warmup', {
           status: res.status,
           platformId: this.profile.id
         })
       }
       if (isShopApiChallengeResponse(res.status, text)) {
+        log.warn('warmup hit challenge page', {
+          platformId: this.profile.id,
+          status: res.status,
+          cookies: [...this.cookieJar.keys()]
+        })
         throw new AppError('NEED_BROWSER', 'shop challenge during warmup', {
           status: res.status,
           platformId: this.profile.id
         })
       }
-      log.info('warmup ok (mainFetch)', {
+      log.info('warmup ok', {
         platformId: this.profile.id,
         status: res.status,
         cookies: [...this.cookieJar.keys()]

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Detect real ESA/WAF challenge pages — NOT product copy that contains 验证/接码.
  * Legitimate JSON API bodies must never become NEED_BROWSER.
  * Shared across all shopApi-family sites.

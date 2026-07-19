@@ -34,8 +34,6 @@ export interface ShopScraper {
     minIntervalMs: number
     pageConcurrency?: number
     signal?: AbortSignal
-    /** shopapi WAF：是否打开系统浏览器（后台自动刷新为 false） */
-    openSystemBrowserOnWaf?: boolean
     onProgress?: (p: { current: number; total: number; phase: string }) => void
   }): Promise<{
     rows: NormalizedShopProductRow[]
@@ -66,7 +64,6 @@ const shopApiScraper: ShopScraper = {
       minIntervalMs: opts.minIntervalMs,
       pageConcurrency: opts.pageConcurrency,
       signal: opts.signal,
-      openSystemBrowserOnWaf: opts.openSystemBrowserOnWaf,
       onProgress: opts.onProgress
     })
   }
@@ -170,7 +167,6 @@ export async function scrapeShopTarget(options: {
   minIntervalMs?: number
   pageConcurrency?: number
   signal?: AbortSignal
-  openSystemBrowserOnWaf?: boolean
   onProgress?: (p: { current: number; total: number; phase: string }) => void
 }): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
   const identity =
@@ -184,7 +180,6 @@ export async function scrapeShopTarget(options: {
     minIntervalMs: options.minIntervalMs ?? 500,
     pageConcurrency: options.pageConcurrency,
     signal: options.signal,
-    openSystemBrowserOnWaf: options.openSystemBrowserOnWaf,
     onProgress: options.onProgress
   })
 }

@@ -6,10 +6,6 @@ vi.mock('electron', () => ({
   }
 }))
 
-vi.mock('../proxy-core-service', () => ({
-  getProxyCoreService: () => null
-}))
-
 import {
   beginSyncHttpRequest,
   clearSyncHttpRequests,

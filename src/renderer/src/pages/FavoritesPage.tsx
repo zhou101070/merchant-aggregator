@@ -12,6 +12,7 @@ import { openExternalSafe } from '../lib/open-external'
 import { timeAgo } from '../lib/format-time'
 import { resolveShopRef } from '../lib/shop-ref'
 import { itemUrlFromProductId } from '../lib/shop-url'
+import { formatUserError } from '../lib/sync-labels'
 
 function typeLabel(t: string): string {
   if (t === 'merchant') return '商家'
@@ -152,7 +153,7 @@ export function FavoritesPage(): React.JSX.Element {
           })
           await waitForJobDone(jobId)
         } catch (err) {
-          failures.push(`${label}: ${err instanceof Error ? err.message : String(err)}`)
+          failures.push(`${label}: ${formatUserError(err)}`)
         }
       }
       if (failures.length) {

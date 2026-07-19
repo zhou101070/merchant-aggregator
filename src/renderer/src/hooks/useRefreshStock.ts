@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import type { RefreshStockResult } from '@shared/types/product'
 import { useToast } from '../components/use-toast'
+import { formatUserError } from '../lib/sync-labels'
 
 export type RefreshStockHandlers = {
   onUpdated?: (res: Extract<RefreshStockResult, { status: 'updated' }>) => void
@@ -40,7 +41,7 @@ export function useRefreshStock(): {
         }
         return res
       } catch (err) {
-        toast(err instanceof Error ? err.message : String(err), 'fail')
+        toast(formatUserError(err), 'fail')
         return null
       } finally {
         busyRef.current = false

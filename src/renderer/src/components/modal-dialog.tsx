@@ -92,6 +92,12 @@ export function ModalDialogTitle({
  * 每次挂载 = 打开；父级卸载本组件 = 关闭。
  * 各页面各自 portal 到 body，实例互不共享。
  */
+function dialogPanelClass(className?: string): string {
+  const parts = (className ?? 'dialog dialog-wide').trim().split(/\s+/).filter(Boolean)
+  if (!parts.includes('dialog')) parts.unshift('dialog')
+  return parts.join(' ')
+}
+
 export function ModalDialog({
   openKey,
   className = 'dialog dialog-wide',
@@ -104,6 +110,7 @@ export function ModalDialog({
   onClose: () => void
   children: ReactNode
 }): React.JSX.Element {
+  const panelClass = dialogPanelClass(className)
   const rootRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const closedRef = useRef(false)
@@ -234,7 +241,7 @@ export function ModalDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={className}
+        className={panelClass}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <ModalTitleIdContext.Provider value={titleId}>

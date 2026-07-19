@@ -157,14 +157,6 @@ export class AutoRefreshScheduler {
       this.lastResult.set(platformId, 'disabled')
       return
     }
-    if (settings.networkPaused) {
-      this.lastResult.set(platformId, 'network_paused')
-      return
-    }
-    if (!(settings.shopScrapeEnabled ?? settings.ldxpScrapeEnabled)) {
-      this.lastResult.set(platformId, 'shop_scrape_off')
-      return
-    }
 
     const pool = this.repos.merchants.listScrapableNeedingSync({
       freshHours: settings.shopFreshHours,

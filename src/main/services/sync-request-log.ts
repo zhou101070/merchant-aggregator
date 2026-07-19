@@ -6,7 +6,6 @@ import { randomUUID } from 'node:crypto'
 import { BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '@shared/types/ipc'
 import type { SyncHttpRequestEntry } from '@shared/types/sync'
-import { getProxyCoreService } from './proxy-core-service'
 
 const MAX_ENTRIES = 200
 
@@ -44,20 +43,6 @@ function isLocalControllerHost(host: string): boolean {
   )
 }
 
-function proxyCoreActive(): boolean {
-  const core = getProxyCoreService()
-  if (!core) return false
-  const st = core.status()
-  return st.state === 'running' && Boolean(st.proxyUrl)
-}
-
-function initialNodeLabel(): string {
-  if (!proxyCoreActive()) return '直连'
-  const pinned = getProxyCoreService()?.currentPinnedNode()
-  if (pinned) return pinned
-  return 'MA-LB'
-}
-
 function snapshot(): SyncHttpRequestEntry[] {
   return entries.slice()
 }
@@ -67,7 +52,6 @@ export function enterSyncRequestScope(jobId: string): void {
   if (activeJobIds.size === 0) {
     entries.length = 0
     byId.clear()
-    getProxyCoreService()?.startConnWatch()
   }
   activeJobIds.add(jobId)
   primaryJobId = jobId
@@ -78,9 +62,6 @@ export function leaveSyncRequestScope(jobId: string): void {
   activeJobIds.delete(jobId)
   if (primaryJobId === jobId) {
     primaryJobId = activeJobIds.size ? [...activeJobIds][0]! : null
-  }
-  if (activeJobIds.size === 0) {
-    getProxyCoreService()?.stopConnWatch()
   }
 }
 
@@ -115,7 +96,7 @@ export function beginSyncHttpRequest(opts: {
     url,
     host,
     startedAt: Date.now(),
-    node: initialNodeLabel(),
+    node: '直连',
     phase: 'pending'
   }
   entries.unshift(entry)
@@ -130,7 +111,7 @@ export function beginSyncHttpRequest(opts: {
 
 export function endSyncHttpRequest(
   id: string | null | undefined,
-  result: { status?: number | null; error?: string | null }
+  result: { status?: number | null; error?: string | null; node?: string | null }
 ): void {
   if (!id) return
   const entry = byId.get(id)
@@ -141,29 +122,6 @@ export function endSyncHttpRequest(
   entry.status = result.status ?? null
   entry.error = result.error ?? null
   entry.phase = result.error && (result.status == null || result.status === 0) ? 'error' : 'done'
-  const pinned = getProxyCoreService()?.currentPinnedNode()
-  if (pinned) entry.node = pinned
+  if (result.node?.trim()) entry.node = result.node.trim()
   emit({ ...entry })
-  void refineNodeFromConnections(id, entry.host, entry.startedAt, endedAt)
-}
-
-async function refineNodeFromConnections(
-  id: string,
-  host: string,
-  startedAt: number,
-  endedAt: number
-): Promise<void> {
-  const core = getProxyCoreService()
-  if (!core || !proxyCoreActive()) return
-  try {
-    const node = await core.resolveOutboundNode({ host, startedAt, endedAt })
-    if (!node) return
-    const entry = byId.get(id)
-    if (!entry) return
-    if (entry.node === node) return
-    entry.node = node
-    emit({ ...entry })
-  } catch {
-    // best-effort
-  }
 }

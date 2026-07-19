@@ -24,26 +24,8 @@ type ElectronNet = {
 
 let proxyInit: Promise<void> | null = null
 
-/** Set by ProxyCoreService when embedded mihomo is running (takes precedence over env). */
-let runtimeProxyUrl: string | null = null
-
-export function setRuntimeProxyUrl(url: string | null): void {
-  runtimeProxyUrl = url?.trim() || null
-  // force re-apply Chromium session proxy on next ensure
-  proxyInit = null
-  log.info('runtime proxy', { url: runtimeProxyUrl ? 'set' : 'cleared' })
-  // Apply eagerly: shop-tab page fetch never goes through mainFetch, so a lazy
-  // re-apply would leave defaultSession on the old proxy (traffic bypasses the core).
-  void ensureSystemProxy()
-}
-
-export function getRuntimeProxyUrl(): string | null {
-  return runtimeProxyUrl
-}
-
 function envProxyRules(): string | null {
   const raw =
-    runtimeProxyUrl ||
     process.env['MA_PROXY'] ||
     process.env['HTTPS_PROXY'] ||
     process.env['https_proxy'] ||
@@ -61,7 +43,12 @@ function envProxyRules(): string | null {
   }
 }
 
-/** Call after app.whenReady — system proxy + optional MA_PROXY/HTTP(S)_PROXY. */
+/**
+ * Apply proxy ONLY to this app's Electron session.defaultSession.
+ * Never writes OS / system proxy settings; other apps are unaffected.
+ * - MA_PROXY / HTTP(S)_PROXY → fixed_servers
+ * - otherwise → direct (do not follow OS proxy either)
+ */
 export async function ensureSystemProxy(): Promise<void> {
   if (proxyInit) return proxyInit
   proxyInit = (async () => {
@@ -72,10 +59,10 @@ export async function ensureSystemProxy(): Promise<void> {
       const fixed = envProxyRules()
       if (fixed) {
         await ses.setProxy({ mode: 'fixed_servers', proxyRules: fixed })
-        log.info('session proxy fixed_servers', { proxyRules: fixed })
+        log.info('app session proxy fixed_servers (not OS)', { proxyRules: fixed })
       } else {
-        await ses.setProxy({ mode: 'system' })
-        log.info('session proxy mode=system')
+        await ses.setProxy({ mode: 'direct' })
+        log.info('app session proxy mode=direct (not OS)')
       }
     } catch (err) {
       log.warn('ensureSystemProxy failed', { err: String(err) })
@@ -342,7 +329,10 @@ async function mainFetchInner(url: string, init?: RequestInit): Promise<Response
           signal
         )
         try {
-          await setProxy({ mode: fromEnv ? 'fixed_servers' : 'system', proxyRules: fromEnv || undefined })
+          await setProxy({
+            mode: fromEnv ? 'fixed_servers' : 'direct',
+            proxyRules: fromEnv || undefined
+          })
         } catch {
           // ignore restore failure
         }

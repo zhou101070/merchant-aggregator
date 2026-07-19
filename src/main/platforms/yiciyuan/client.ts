@@ -80,15 +80,29 @@ export class YiciyuanClient {
   readonly baseUrl: string
   private readonly ua: string
   private readonly limiter: IntervalLimiter
+  private readonly minIntervalMs: number
+  private readonly signal?: AbortSignal
 
-  constructor(baseUrl: string, options?: { userAgent?: string; minIntervalMs?: number }) {
+  constructor(
+    baseUrl: string,
+    options?: { userAgent?: string; minIntervalMs?: number; signal?: AbortSignal }
+  ) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
     this.ua = resolveRequestUserAgent(options?.userAgent)
-    this.limiter = new IntervalLimiter(options?.minIntervalMs ?? 500)
+    this.minIntervalMs = options?.minIntervalMs ?? 500
+    this.limiter = new IntervalLimiter(this.minIntervalMs)
+    this.signal = options?.signal
   }
 
   private async getJson<T>(path: string): Promise<T> {
-    await this.limiter.waitTurn()
+    try {
+      await this.limiter.waitTurn(this.signal)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new AppError('CANCELLED', 'yiciyuan scrape cancelled')
+      }
+      throw err
+    }
     const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`
     const headers = browserJsonGetHeaders({
       userAgent: this.ua,
@@ -99,8 +113,11 @@ export class YiciyuanClient {
 
     let res: Response
     try {
-      res = await mainFetch(url, { method: 'GET', headers })
+      res = await mainFetch(url, { method: 'GET', headers, signal: this.signal })
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new AppError('CANCELLED', 'yiciyuan scrape cancelled')
+      }
       throw new AppError('NETWORK', `yiciyuan fetch failed: ${String(err)}`, {
         path,
         url,

@@ -36,15 +36,13 @@ describe('coalesceAppSettings', () => {
     expect(enabled.autoRefreshMaxIntervalMs).toBe(20 * 60_000)
   })
 
-  it('rejects non-boolean shopScrapeEnabled from dual keys', () => {
+  it('forces shopScrapeEnabled to true', () => {
     const r = coalesceAppSettings(DEFAULT_APP_SETTINGS, {
-      // @ts-expect-error intentional corrupt payload
-      shopScrapeEnabled: 'false',
-      // @ts-expect-error intentional corrupt payload
-      ldxpScrapeEnabled: 'true'
+      shopScrapeEnabled: false,
+      ldxpScrapeEnabled: false
     })
-    expect(r.shopScrapeEnabled).toBe(DEFAULT_APP_SETTINGS.shopScrapeEnabled)
-    expect(r.ldxpScrapeEnabled).toBe(r.shopScrapeEnabled)
+    expect(r.shopScrapeEnabled).toBe(true)
+    expect(r.ldxpScrapeEnabled).toBe(true)
   })
 
   it('rejects non-finite shopMinIntervalMs and dual-writes valid number', () => {
@@ -64,20 +62,16 @@ describe('coalesceAppSettings', () => {
     expect(r.shopMinIntervalMs).toBe(500)
   })
 
-  it('clamps shopPageConcurrency to 1–10', () => {
+  it('forces shopPageConcurrency to 1', () => {
     expect(coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 0 }).shopPageConcurrency).toBe(
       1
     )
     expect(
       coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 99 }).shopPageConcurrency
-    ).toBe(10)
+    ).toBe(1)
     expect(
       coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 3.7 }).shopPageConcurrency
-    ).toBe(3)
-    expect(
-      coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopPageConcurrency: 'x' as unknown as number })
-        .shopPageConcurrency
-    ).toBe(DEFAULT_APP_SETTINGS.shopPageConcurrency)
+    ).toBe(1)
   })
 
   it('accepts theme modes and rejects invalid', () => {
@@ -92,20 +86,14 @@ describe('coalesceAppSettings', () => {
 })
 
 describe('dualWriteSettingsPatch', () => {
-  it('drops invalid shopScrapeEnabled types', () => {
-    const p = dualWriteSettingsPatch({
-      // @ts-expect-error intentional
-      shopScrapeEnabled: 'false'
+  it('forces shopScrapeEnabled true even when patch says false', () => {
+    expect(dualWriteSettingsPatch({ shopScrapeEnabled: false })).toMatchObject({
+      shopScrapeEnabled: true,
+      ldxpScrapeEnabled: true
     })
-    expect(p.shopScrapeEnabled).toBeUndefined()
-    expect(p.ldxpScrapeEnabled).toBeUndefined()
   })
 
-  it('dual-writes boolean and finite interval', () => {
-    expect(dualWriteSettingsPatch({ shopScrapeEnabled: false })).toMatchObject({
-      shopScrapeEnabled: false,
-      ldxpScrapeEnabled: false
-    })
+  it('dual-writes finite interval', () => {
     expect(dualWriteSettingsPatch({ shopMinIntervalMs: 900 })).toMatchObject({
       shopMinIntervalMs: 900,
       ldxpMinIntervalMs: 900
@@ -118,19 +106,14 @@ describe('dualWriteSettingsPatch', () => {
     expect(p.recentSearches).toHaveLength(RECENT_SEARCHES_MAX)
   })
 
-  it('dual-writes legacy proxySubscriptionUrl into a single-item list', () => {
-    const p = dualWriteSettingsPatch({
-      proxySubscriptionUrl: 'https://legacy.example/sub'
+  it('strips legacy proxy fields from coalesce', () => {
+    const r = coalesceAppSettings(DEFAULT_APP_SETTINGS, {
+      // @ts-expect-error legacy field from old settings JSON
+      proxyCoreEnabled: true,
+      // @ts-expect-error legacy field
+      proxySubscriptions: [{ id: 'x', url: 'https://x.example', name: 'x', enabled: true }]
     })
-    expect(p.proxySubscriptionUrl).toBe('https://legacy.example/sub')
-    expect(p.proxySubscriptions).toEqual([
-      { id: 'legacy', url: 'https://legacy.example/sub', name: '订阅 1', enabled: true }
-    ])
-  })
-
-  it('drops invalid legacy proxySubscriptionUrl schemes', () => {
-    const p = dualWriteSettingsPatch({ proxySubscriptionUrl: 'file:///tmp/x' })
-    expect(p.proxySubscriptions).toEqual([])
-    expect(p.proxySubscriptionUrl).toBe('')
+    expect('proxyCoreEnabled' in r).toBe(false)
+    expect('proxySubscriptions' in r).toBe(false)
   })
 })

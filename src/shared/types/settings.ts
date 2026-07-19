@@ -1,16 +1,6 @@
 import type { SavedSearch } from './saved-search'
-import {
-  AUTO_REFRESH_LIMITS,
-  RATE_LIMITS,
-  RECENT_SEARCHES_MAX,
-  SHOP_API_LIMITS
-} from '../constants'
+import { AUTO_REFRESH_LIMITS, RATE_LIMITS, RECENT_SEARCHES_MAX } from '../constants'
 import { normalizeSavedSearches } from '../lib/saved-searches'
-import {
-  normalizeProxySubscriptions,
-  primaryProxySubscriptionUrl,
-  type ProxySubscription
-} from './proxy-subscription'
 
 /** 外观主题:跟随系统 / 强制浅色 / 强制深色 */
 export type ThemeMode = 'system' | 'light' | 'dark'
@@ -18,16 +8,18 @@ export type ThemeMode = 'system' | 'light' | 'dark'
 const THEME_MODES = new Set<ThemeMode>(['system', 'light', 'dark'])
 
 export interface AppSettings {
+  /** 已废弃：始终 false，保留字段兼容已存设置 */
   networkPaused: boolean
   priceaiUa: string
+  /** PriceAI 商家列表分页间隔 — 固定默认值，保留字段兼容已存设置 */
   requestIntervalMs: number
   /** 旧数据阈值(小时):超过则视为需同步;「同步旧数据店铺」/自动刷新/UI 过期标注 */
   shopFreshHours: number
   /** Canonical: min interval between shop API requests */
   shopMinIntervalMs: number
-  /** ShopAPI: concurrent goodsList pages per goods type */
+  /** ShopAPI: concurrent goodsList pages — fixed at 1, kept for stored settings shape */
   shopPageConcurrency: number
-  /** Canonical: allow shop deep-scrape jobs */
+  /** 已废弃：始终 true，保留字段兼容已存设置 */
   shopScrapeEnabled: boolean
   /**
    * @deprecated dual-written with shopMinIntervalMs for one release.
@@ -35,7 +27,7 @@ export interface AppSettings {
    */
   ldxpMinIntervalMs: number
   /**
-   * @deprecated dual-written with shopScrapeEnabled for one release.
+   * @deprecated dual-written with shopScrapeEnabled; always true.
    */
   ldxpScrapeEnabled: boolean
   notifyOnJobFinished: boolean
@@ -43,17 +35,6 @@ export interface AppSettings {
   blockOnShopSyncFail: boolean
   /** 外观主题,默认 system */
   theme: ThemeMode
-  /** 启用内置代理内核（订阅 → load-balance → 本地 mixed-port） */
-  proxyCoreEnabled: boolean
-  /**
-   * @deprecated dual-written from proxySubscriptions[0] for one release.
-   * Prefer proxySubscriptions.
-   */
-  proxySubscriptionUrl: string
-  /** 多订阅：每个 URL 为一组（仅存本地 settings） */
-  proxySubscriptions: ProxySubscription[]
-  /** 记录节点调用日志（内存环形缓冲，默认关） */
-  proxyCallLogEnabled: boolean
   /** 程序运行中自动刷新店铺（按平台独立随机间隔） */
   autoRefreshEnabled: boolean
   /** 每平台自动刷新最短间隔 ms */
@@ -107,8 +88,7 @@ export function coalesceAppSettings(
   const base: AppSettings = { ...defaults }
   if (!partial) return base
 
-  const shopScrapeRaw = partial.shopScrapeEnabled ?? partial.ldxpScrapeEnabled
-  const shopScrapeEnabled = asBoolean(shopScrapeRaw, base.shopScrapeEnabled)
+  const shopScrapeEnabled = true
 
   const shopMinRaw = partial.shopMinIntervalMs ?? partial.ldxpMinIntervalMs
   const shopMinIntervalMs = Math.max(
@@ -116,14 +96,8 @@ export function coalesceAppSettings(
     asFiniteNumber(shopMinRaw, base.shopMinIntervalMs)
   )
 
-  const pageConcLim = SHOP_API_LIMITS.pageConcurrency
-  const shopPageConcurrency = Math.min(
-    pageConcLim.max,
-    Math.max(
-      pageConcLim.min,
-      Math.floor(asFiniteNumber(partial.shopPageConcurrency, base.shopPageConcurrency))
-    )
-  )
+  const shopPageConcurrency = 1
+  const requestIntervalMs = RATE_LIMITS.priceaiMerchantsIntervalMs.default
 
   const recentSearches = Array.isArray(partial.recentSearches)
     ? partial.recentSearches
@@ -144,15 +118,14 @@ export function coalesceAppSettings(
   const next: AppSettings = {
     ...base,
     ...partial,
+    networkPaused: false,
     shopScrapeEnabled,
     shopMinIntervalMs,
     shopPageConcurrency,
+    requestIntervalMs,
     ldxpScrapeEnabled: shopScrapeEnabled,
     ldxpMinIntervalMs: shopMinIntervalMs,
     theme: asThemeMode(partial.theme, base.theme),
-    proxyCoreEnabled: asBoolean(partial.proxyCoreEnabled, base.proxyCoreEnabled),
-    ...coalesceProxySubscriptions(partial, base),
-    proxyCallLogEnabled: asBoolean(partial.proxyCallLogEnabled, base.proxyCallLogEnabled),
     blockOnShopSyncFail: asBoolean(partial.blockOnShopSyncFail, base.blockOnShopSyncFail),
     autoRefreshEnabled: asBoolean(partial.autoRefreshEnabled, base.autoRefreshEnabled),
     ...clampAutoRefreshIntervals(partial, base),
@@ -160,38 +133,14 @@ export function coalesceAppSettings(
     searchExcludeWords,
     savedSearches
   }
-  // 剥离已废弃的白名单字段（旧 settings JSON 可能仍带）
+  // 剥离已废弃字段（旧 settings JSON 可能仍带）
   delete (next as AppSettings & { openExternalMode?: unknown }).openExternalMode
   delete (next as AppSettings & { allowlistHosts?: unknown }).allowlistHosts
+  delete (next as AppSettings & { proxyCoreEnabled?: unknown }).proxyCoreEnabled
+  delete (next as AppSettings & { proxySubscriptionUrl?: unknown }).proxySubscriptionUrl
+  delete (next as AppSettings & { proxySubscriptions?: unknown }).proxySubscriptions
+  delete (next as AppSettings & { proxyCallLogEnabled?: unknown }).proxyCallLogEnabled
   return next
-}
-
-function coalesceProxySubscriptions(
-  partial: Partial<AppSettings>,
-  base: AppSettings
-): Pick<AppSettings, 'proxySubscriptions' | 'proxySubscriptionUrl'> {
-  let subs: ProxySubscription[]
-  if (partial.proxySubscriptions !== undefined) {
-    subs = normalizeProxySubscriptions(partial.proxySubscriptions)
-  } else {
-    subs = normalizeProxySubscriptions(base.proxySubscriptions)
-  }
-
-  const legacyUrl =
-    typeof partial.proxySubscriptionUrl === 'string'
-      ? partial.proxySubscriptionUrl.trim()
-      : base.proxySubscriptionUrl?.trim() || ''
-
-  // Migrate single legacy URL when list empty
-  if (subs.length === 0 && legacyUrl) {
-    subs = normalizeProxySubscriptions([
-      { id: 'legacy', url: legacyUrl, name: '订阅 1', enabled: true }
-    ])
-  }
-
-  // Dual-write primary URL for older readers
-  const proxySubscriptionUrl = primaryProxySubscriptionUrl(subs) || legacyUrl
-  return { proxySubscriptions: subs, proxySubscriptionUrl }
 }
 
 /** trim + 去空 + 保序去重 */
@@ -213,20 +162,10 @@ export function normalizeWordList(words: string[]): string[] {
 /** Ensure dual-write of shop_* and ldxp_* when applying a partial patch. */
 export function dualWriteSettingsPatch(partial: Partial<AppSettings>): Partial<AppSettings> {
   const out: Partial<AppSettings> = { ...partial }
-  if (partial.shopScrapeEnabled !== undefined) {
-    if (typeof partial.shopScrapeEnabled === 'boolean') {
-      out.shopScrapeEnabled = partial.shopScrapeEnabled
-      out.ldxpScrapeEnabled = partial.shopScrapeEnabled
-    } else {
-      delete out.shopScrapeEnabled
-    }
-  } else if (partial.ldxpScrapeEnabled !== undefined) {
-    if (typeof partial.ldxpScrapeEnabled === 'boolean') {
-      out.shopScrapeEnabled = partial.ldxpScrapeEnabled
-      out.ldxpScrapeEnabled = partial.ldxpScrapeEnabled
-    } else {
-      delete out.ldxpScrapeEnabled
-    }
+  // 深刮总开关已移除，固定开启
+  if (partial.shopScrapeEnabled !== undefined || partial.ldxpScrapeEnabled !== undefined) {
+    out.shopScrapeEnabled = true
+    out.ldxpScrapeEnabled = true
   }
   if (partial.shopMinIntervalMs !== undefined) {
     if (typeof partial.shopMinIntervalMs === 'number' && Number.isFinite(partial.shopMinIntervalMs)) {
@@ -245,41 +184,15 @@ export function dualWriteSettingsPatch(partial: Partial<AppSettings>): Partial<A
       delete out.ldxpMinIntervalMs
     }
   }
+  // 店刮并发固定为 1，忽略外部补丁
   if (partial.shopPageConcurrency !== undefined) {
-    if (
-      typeof partial.shopPageConcurrency === 'number' &&
-      Number.isFinite(partial.shopPageConcurrency)
-    ) {
-      const lim = SHOP_API_LIMITS.pageConcurrency
-      out.shopPageConcurrency = Math.min(
-        lim.max,
-        Math.max(lim.min, Math.floor(partial.shopPageConcurrency))
-      )
-    } else {
-      delete out.shopPageConcurrency
-    }
+    out.shopPageConcurrency = 1
   }
   if (Array.isArray(partial.recentSearches)) {
     out.recentSearches = partial.recentSearches
       .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
       .map((s) => s.trim())
       .slice(0, RECENT_SEARCHES_MAX)
-  }
-  if (partial.proxySubscriptions !== undefined) {
-    const subs = normalizeProxySubscriptions(partial.proxySubscriptions)
-    out.proxySubscriptions = subs
-    out.proxySubscriptionUrl = primaryProxySubscriptionUrl(subs)
-  } else if (typeof partial.proxySubscriptionUrl === 'string') {
-    // Legacy-only patch: dual-write a single-item list (or clear primary)
-    const url = partial.proxySubscriptionUrl.trim()
-    out.proxySubscriptionUrl = url
-    if (url) {
-      out.proxySubscriptions = normalizeProxySubscriptions([
-        { id: 'legacy', url, name: '订阅 1', enabled: true }
-      ])
-      // Invalid scheme → normalize drops it; keep primary empty too
-      out.proxySubscriptionUrl = primaryProxySubscriptionUrl(out.proxySubscriptions)
-    }
   }
   return out
 }

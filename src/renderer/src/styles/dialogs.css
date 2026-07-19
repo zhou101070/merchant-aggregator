@@ -56,6 +56,7 @@ dialog.dialog,
 .modal-root > .dialog {
   border: 1px solid var(--border);
   border-radius: var(--radius-l);
+  /* 实底，禁止透底/毛玻璃 */
   background: var(--bg-overlay);
   color: var(--ink);
   box-shadow: var(--shadow-3);
@@ -65,6 +66,8 @@ dialog.dialog,
   outline: none;
   /* 裁切 head 背景，保留顶部圆角 */
   overflow: hidden;
+  /* 防止子表透明叠字 */
+  isolation: isolate;
 }
 dialog.dialog {
   /* 视口居中（含确认框） */
@@ -212,7 +215,11 @@ dialog.dialog[open].leaving::backdrop {
   pointer-events: none;
 }
 .dialog-body {
-  padding: 20px 24px 4px;
+  padding: 12px 16px 16px;
+}
+/* 有底部操作栏时收紧，避免与 actions 叠出过大空隙 */
+.dialog-body:has(+ .dialog-actions) {
+  padding-bottom: 2px;
 }
 .dialog-head {
   display: flex;
@@ -220,12 +227,12 @@ dialog.dialog[open].leaving::backdrop {
   justify-content: space-between;
   gap: 12px;
   margin: 0;
-  padding: 20px 24px 8px;
+  padding: 12px 16px 6px;
   background: var(--bg-overlay);
 }
 .dialog-head .dialog-title {
   margin: 0;
-  padding-top: 4px;
+  padding-top: 2px;
   min-width: 0;
   flex: 1;
 }
@@ -234,7 +241,7 @@ dialog.dialog[open].leaving::backdrop {
   margin: -4px -6px 0 0;
 }
 .dialog-title {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   font-size: var(--text-xl);
   font-weight: 600;
 }
@@ -249,7 +256,7 @@ dialog.dialog[open].leaving::backdrop {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 16px 24px 20px;
+  padding: 10px 16px 12px;
 }
 
 /* Toast */

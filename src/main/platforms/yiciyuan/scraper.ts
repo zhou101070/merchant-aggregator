@@ -27,7 +27,10 @@ export async function scrapeYiciyuan(options: {
     host,
     baseUrl: options.baseUrl
   })
-  const client = new YiciyuanClient(baseUrl, { minIntervalMs: options.minIntervalMs })
+  const client = new YiciyuanClient(baseUrl, {
+    minIntervalMs: options.minIntervalMs,
+    signal: options.signal
+  })
 
   options.onProgress?.({ current: 0, total: 1, phase: 'categories' })
   // Probe + warm path; failures mean not this family

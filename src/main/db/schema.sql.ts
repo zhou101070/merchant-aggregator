@@ -198,7 +198,7 @@ export const SCHEMA_V7_SQL = `
 CREATE INDEX IF NOT EXISTS idx_shop_products_title_norm ON shop_products(title_norm);
 `
 
-/** Schema version 11 — proxy nodes proven unusable for a platform (expiring). */
+/** Schema version 11 — proxy nodes proven unusable for a platform (expiring). Kept for historical migrate. */
 export const SCHEMA_V11_SQL = `
 CREATE TABLE IF NOT EXISTS platform_bad_nodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,6 +212,11 @@ CREATE TABLE IF NOT EXISTS platform_bad_nodes (
 CREATE INDEX IF NOT EXISTS idx_platform_bad_nodes_platform ON platform_bad_nodes(platform_id);
 `
 
+/** Schema version 12 — drop platform_bad_nodes (built-in proxy removed). */
+export const SCHEMA_V12_SQL = `
+DROP TABLE IF EXISTS platform_bad_nodes;
+`
+
 export const REQUIRED_TABLES = [
   'schema_migrations',
   'merchants',
@@ -220,6 +225,5 @@ export const REQUIRED_TABLES = [
   'recent_views',
   'sync_jobs',
   'app_settings',
-  'blocked_targets',
-  'platform_bad_nodes'
+  'blocked_targets'
 ] as const

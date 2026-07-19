@@ -7,7 +7,8 @@ import {
   SCHEMA_V2_SQL,
   SCHEMA_V6_SQL,
   SCHEMA_V7_SQL,
-  SCHEMA_V11_SQL
+  SCHEMA_V11_SQL,
+  SCHEMA_V12_SQL
 } from './schema.sql'
 
 const log = createLogger('db:migrate')
@@ -228,6 +229,13 @@ export function migrate(db: Database.Database): { from: number; to: number } {
     db.exec(SCHEMA_V11_SQL)
     recordMigration(db, 11)
     version = 11
+  }
+
+  if (version < 12) {
+    log.info('applying schema v12 (drop platform_bad_nodes)')
+    db.exec(SCHEMA_V12_SQL)
+    recordMigration(db, 12)
+    version = 12
   }
 
   if (version !== from) {

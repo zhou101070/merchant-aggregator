@@ -8,14 +8,9 @@ import type {
   ShopProductListQuery
 } from './product'
 import type { SearchQuery, SearchResult } from './search'
-import type {
-  ProxyCoreApplyRequest,
-  ProxyCoreDetail,
-  ProxyCoreStatus,
-  ProxyCallLogEntry
-} from './proxy-core'
 import type { AppSettings } from './settings'
 import type {
+  JobPoolSnapshot,
   SyncHttpRequestEntry,
   SyncJobListQuery,
   SyncJobListResult,
@@ -39,6 +34,8 @@ export const IPC_CHANNELS = {
   syncRequestLog: 'sync:requestLog',
   syncListRequestLogs: 'sync:listRequestLogs',
   syncClearRequestLogs: 'sync:clearRequestLogs',
+  syncPoolSnapshot: 'sync:poolSnapshot',
+  syncGetPoolSnapshot: 'sync:getPoolSnapshot',
   syncDeleteJob: 'sync:deleteJob',
   syncClearHistory: 'sync:clearHistory',
   syncListJobs: 'sync:listJobs',
@@ -54,6 +51,8 @@ export const IPC_CHANNELS = {
   blocklistClear: 'blocklist:clear',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  /** Wipe local business data (keeps settings). */
+  dataClearAll: 'data:clearAll',
   shellOpenExternal: 'shell:openExternal',
   diagnosticsGet: 'diagnostics:get',
   /** Win 自绘窗控 */
@@ -62,13 +61,7 @@ export const IPC_CHANNELS = {
   windowClose: 'window:close',
   windowIsMaximized: 'window:isMaximized',
   /** main → renderer: boolean */
-  windowMaximized: 'window:maximized',
-  proxyCoreStatus: 'proxyCore:status',
-  proxyCoreApply: 'proxyCore:apply',
-  proxyCoreDetail: 'proxyCore:detail',
-  proxyCoreSetCallLog: 'proxyCore:setCallLog',
-  proxyCoreClearCallLogs: 'proxyCore:clearCallLogs',
-  proxyCoreClearBadNodes: 'proxyCore:clearBadNodes'
+  windowMaximized: 'window:maximized'
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
@@ -98,8 +91,10 @@ export interface RendererApi {
     clearHistory: () => Promise<{ deleted: number }>
     listRequestLogs: () => Promise<SyncHttpRequestEntry[]>
     clearRequestLogs: () => Promise<{ ok: boolean }>
+    getPoolSnapshot: (jobId: string) => Promise<JobPoolSnapshot | null>
     onProgress: (cb: (e: SyncProgressEvent) => void) => () => void
     onRequestLog: (cb: (e: SyncHttpRequestEntry) => void) => () => void
+    onPoolSnapshot: (cb: (e: JobPoolSnapshot) => void) => () => void
   }
   favorites: {
     list: () => Promise<Favorite[]>
@@ -134,6 +129,10 @@ export interface RendererApi {
     get: () => Promise<AppSettings>
     set: (p: Partial<AppSettings>) => Promise<AppSettings>
   }
+  data: {
+    /** Clear merchants / products / favorites / history / blocklist etc. Keeps settings. */
+    clearAll: () => Promise<{ ok: true; total: number; deleted: Record<string, number> }>
+  }
   shell: {
     openExternal: (url: string) => Promise<{ ok: boolean }>
   }
@@ -146,14 +145,5 @@ export interface RendererApi {
     close: () => Promise<void>
     isMaximized: () => Promise<boolean>
     onMaximized: (cb: (maximized: boolean) => void) => () => void
-  }
-  proxyCore: {
-    status: () => Promise<ProxyCoreStatus>
-    /** Persist settings + start/stop core */
-    apply: (req: ProxyCoreApplyRequest) => Promise<ProxyCoreStatus>
-    detail: () => Promise<ProxyCoreDetail>
-    setCallLogEnabled: (enabled: boolean) => Promise<ProxyCoreStatus>
-    clearCallLogs: () => Promise<{ ok: boolean; callLogs: ProxyCallLogEntry[] }>
-    clearBadNodes: () => Promise<{ ok: boolean }>
   }
 }
