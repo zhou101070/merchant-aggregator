@@ -310,6 +310,213 @@ describe('MerchantsRepo list shopPlatforms', () => {
   })
 })
 
+function normalizedRow(
+  partial: {
+    id: string
+    name: string
+    shop_url?: string | null
+    entry_url?: string | null
+    shop_platform?: string | null
+    shop_token?: string | null
+    offer_count?: number
+    source_name?: string | null
+  }
+) {
+  const platform = partial.shop_platform ?? null
+  const token = partial.shop_token ?? null
+  return {
+    id: partial.id,
+    name: partial.name,
+    store_name: partial.name,
+    host: null,
+    shop_url: partial.shop_url ?? null,
+    entry_url: partial.entry_url ?? null,
+    source_id: null,
+    source_name: partial.source_name ?? null,
+    collector_kind: null,
+    health_status: null,
+    offer_count: partial.offer_count ?? 0,
+    in_stock_count: 0,
+    out_of_stock_count: 0,
+    product_count: 0,
+    platform_count: 0,
+    platforms_json: '[]',
+    product_types_json: '[]',
+    representative_product: null,
+    representative_offer_title: null,
+    representative_price: null,
+    representative_currency: null,
+    lowest_hit_count: 0,
+    warranty_lowest_hit_count: 0,
+    risk_feedback_count: 0,
+    has_platform_aftersales: 0,
+    shop_created_at: null,
+    included_at: null,
+    last_success_at: null,
+    latest_seen_at: null,
+    consecutive_failures: 0,
+    observation_started_at: null,
+    generated_at: null,
+    fetched_at: new Date().toISOString(),
+    raw_json: '{}',
+    ldxp_token: platform === 'ldxp' ? token : null,
+    shop_platform: platform,
+    shop_token: token,
+    name_norm: partial.name.toLowerCase(),
+    _shopRefDerived: !!(platform && token)
+  }
+}
+
+describe('MerchantsRepo identity dedupe', () => {
+  it('reuses existing id when second source has same shop ref', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      repo.upsertMany([
+        normalizedRow({
+          id: 'priceai-1',
+          name: '奥特曼',
+          shop_platform: 'ldxp',
+          shop_token: 'TOK1',
+          shop_url: 'https://pay.ldxp.cn/shop/TOK1',
+          offer_count: 20,
+          source_name: 'PriceAI'
+        })
+      ])
+      const n = repo.upsertMany([
+        normalizedRow({
+          id: 'nodebits-uuid-1',
+          name: '奥特曼-nb',
+          shop_platform: 'ldxp',
+          shop_token: 'tok1',
+          shop_url: 'https://pay.ldxp.cn/shop/TOK1/',
+          offer_count: 5,
+          source_name: 'NodeBits'
+        })
+      ])
+      expect(n).toBe(1)
+      expect(repo.count()).toBe(1)
+      expect(repo.getById('priceai-1')).not.toBeNull()
+      expect(repo.getById('nodebits-uuid-1')).toBeNull()
+      // Cross-id reuse merges catalog: keep max offer_count, union sources
+      expect(repo.getById('priceai-1')?.offerCount).toBe(20)
+      const src = repo.getById('priceai-1')?.sourceName ?? ''
+      expect(src).toContain('PriceAI')
+      expect(src).toContain('NodeBits')
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('merges by same normalized entry_url without shop ref', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      repo.upsertMany([
+        normalizedRow({
+          id: 'a',
+          name: '入口店',
+          entry_url: 'https://Example.COM/shop/1'
+        })
+      ])
+      repo.upsertMany([
+        normalizedRow({
+          id: 'b',
+          name: '入口店2',
+          entry_url: 'https://example.com/shop/1/'
+        })
+      ])
+      expect(repo.count()).toBe(1)
+      expect(repo.getById('a')).not.toBeNull()
+      expect(repo.getById('b')).toBeNull()
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('dedupeExisting merges historical dups and rehomes favorites', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      insertMerchant(db, {
+        id: 'keep',
+        name: '主档',
+        shopPlatform: 'ldxp',
+        shopToken: 'SAME',
+        offerCount: 1
+      })
+      insertMerchant(db, {
+        id: 'nodebits-dup',
+        name: '重复',
+        shopPlatform: 'ldxp',
+        shopToken: 'same',
+        offerCount: 9
+      })
+      db.prepare(
+        `INSERT INTO favorites (target_type, target_id, note, created_at) VALUES ('merchant', ?, NULL, ?)`
+      ).run('nodebits-dup', hoursAgo(1))
+      db.prepare(
+        `INSERT INTO shop_products (
+           id, source, merchant_id, source_shop_token, source_goods_key,
+           title, price, currency, stock, fetched_at
+         ) VALUES ('ldxp:same:g1', 'ldxp', 'nodebits-dup', 'same', 'g1', 'x', 1, 'CNY', 1, ?)`
+      ).run(hoursAgo(1))
+
+      const deleted = repo.dedupeExisting()
+      expect(deleted).toBe(1)
+      expect(repo.count()).toBe(1)
+      expect(repo.getById('keep')).not.toBeNull()
+      expect(repo.getById('nodebits-dup')).toBeNull()
+
+      const fav = db
+        .prepare(
+          `SELECT target_id FROM favorites WHERE target_type = 'merchant' AND target_id = 'keep'`
+        )
+        .get() as { target_id: string } | undefined
+      expect(fav?.target_id).toBe('keep')
+
+      const sp = db
+        .prepare(`SELECT merchant_id FROM shop_products WHERE id = 'ldxp:same:g1'`)
+        .get() as { merchant_id: string }
+      expect(sp.merchant_id).toBe('keep')
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('collapses same-ref rows inside one upsertMany batch', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      const repo = new MerchantsRepo(db)
+      const n = repo.upsertMany([
+        normalizedRow({
+          id: 'm1',
+          name: 'A',
+          shop_platform: 'ldxp',
+          shop_token: 'T1',
+          shop_url: 'https://pay.ldxp.cn/shop/T1',
+          offer_count: 2
+        }),
+        normalizedRow({
+          id: 'nodebits-m1',
+          name: 'B',
+          shop_platform: 'ldxp',
+          shop_token: 'T1',
+          shop_url: 'https://pay.ldxp.cn/shop/T1',
+          offer_count: 8
+        })
+      ])
+      expect(n).toBe(1)
+      expect(repo.count()).toBe(1)
+      expect(repo.getById('m1')).not.toBeNull()
+      expect(repo.getById('nodebits-m1')).toBeNull()
+      expect(repo.getById('m1')?.offerCount).toBe(8)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+})
+
 describe('FavoritesRepo enrichment', () => {
   it('returns current price/token for shop_product and merchant favorites', () => {
     const { db } = openDatabase({ filePath: ':memory:' })

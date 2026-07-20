@@ -32,7 +32,10 @@ export interface SearchHit {
 export interface SearchQuery {
   q: string
   kinds?: SearchHitKind[]
-  /** @deprecated always filtered server-side; kept for saved-search compat */
+  /**
+   * When true (default), only rows with stock > 0.
+   * Set false to include OOS / null stock; OOS is stored on sync.
+   */
   inStockOnly?: boolean
   priceMin?: number
   priceMax?: number

@@ -89,7 +89,6 @@ export function normalizeDujiaoProduct(
 ): NormalizedShopProductRow[] {
   const slug = (product.slug ?? (product.id != null ? String(product.id) : '')).trim()
   if (!slug) return []
-  if (product.is_sold_out === true && productStock(product) <= 0) return []
 
   const baseTitle = pickI18n(product.title) || slug
   const categoryName = pickI18n(product.category?.name) || null
@@ -117,7 +116,6 @@ export function normalizeDujiaoProduct(
     raw: unknown
   ): NormalizedShopProductRow | null => {
     if (opts.onlyGoodsKey && opts.onlyGoodsKey !== goodsKey) return null
-    if (!(stock > 0)) return null
     return {
       id: `${DUJIAO_SOURCE_ID}:${host}:${goodsKey}`,
       source: DUJIAO_SOURCE_ID,

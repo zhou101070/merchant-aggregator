@@ -16,7 +16,8 @@ import {
   Kbd,
   LowFlag,
   Price,
-  SkeletonRows
+  SkeletonRows,
+  Switch
 } from '../components/ui'
 import { FilterBar } from '../components/layout'
 import { HealthStatus } from '../components/health-status'
@@ -161,6 +162,8 @@ export function SearchPage(): React.JSX.Element {
   const [excludeDraft, setExcludeDraft] = useState('')
   const [priceMinText, setPriceMinText] = useState('')
   const [priceMaxText, setPriceMaxText] = useState('')
+  /** Default on: hide OOS; off shows sold-out rows stored on sync */
+  const [inStockOnly, setInStockOnly] = useState(true)
   const [sort, setSort] = useState<SortKey>('score')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [facets, setFacets] = useState<Record<string, { value: string; count: number }[]>>({})
@@ -218,6 +221,7 @@ export function SearchPage(): React.JSX.Element {
       try {
         const res = await window.api.search.query({
           q: debounced,
+          inStockOnly,
           priceMin,
           priceMax,
           merchantName,
@@ -240,6 +244,7 @@ export function SearchPage(): React.JSX.Element {
     },
     [
       debounced,
+      inStockOnly,
       priceMin,
       priceMax,
       merchantName,
@@ -255,7 +260,7 @@ export function SearchPage(): React.JSX.Element {
   const syncTick = useSyncTerminalTick(progress)
 
   // 筛选/pageSize 变化时先回第 0 页再搜，避免用旧 page 打错 offset
-  const filterKey = `${debounced}\0${priceMin ?? ''}\0${priceMax ?? ''}\0${merchantName ?? ''}\0${titleContains.join('\0')}\0${titleExcludes.join('\0')}\0${sort}\0${sortDir}\0${pageSize}`
+  const filterKey = `${debounced}\0${inStockOnly}\0${priceMin ?? ''}\0${priceMax ?? ''}\0${merchantName ?? ''}\0${titleContains.join('\0')}\0${titleExcludes.join('\0')}\0${sort}\0${sortDir}\0${pageSize}`
   const prevFilterKey = useRef(filterKey)
   useEffect(() => {
     const filtersChanged = prevFilterKey.current !== filterKey
@@ -401,6 +406,7 @@ export function SearchPage(): React.JSX.Element {
     setDebounced(s.q.trim())
     setTitleContains([...s.titleContains])
     setTitleExcludes([...s.titleExcludes])
+    setInStockOnly(s.inStockOnly !== false)
     setPriceMinText(s.priceMin != null ? String(s.priceMin) : '')
     setPriceMaxText(s.priceMax != null ? String(s.priceMax) : '')
     setMerchantName(s.merchantName)
@@ -414,7 +420,7 @@ export function SearchPage(): React.JSX.Element {
       q: debounced,
       titleContains: [...titleContains],
       titleExcludes: [...titleExcludes],
-      inStockOnly: true,
+      inStockOnly,
       priceMin,
       priceMax,
       merchantName,
@@ -474,7 +480,13 @@ export function SearchPage(): React.JSX.Element {
       return
     }
     void refreshStock(hit.id, {
-      onUpdated: (res) =>
+      onUpdated: (res) => {
+        // 只看有货时，刷新后无货则从当前列表去掉
+        if (inStockOnly && !(typeof res.stock === 'number' && res.stock > 0)) {
+          setHits((prev) => prev.filter((h) => h.id !== hit.id))
+          setTotal((t) => Math.max(0, t - 1))
+          return
+        }
         setHits((prev) =>
           prev.map((h) =>
             h.id === hit.id
@@ -483,11 +495,13 @@ export function SearchPage(): React.JSX.Element {
                   stockCount: res.stock,
                   price: res.product.price,
                   fetchedAt: res.product.fetchedAt,
-                  status: 'in_stock'
+                  status:
+                    typeof res.stock === 'number' && res.stock > 0 ? 'in_stock' : null
                 }
               : h
           )
-        ),
+        )
+      },
       onRemoved: () => {
         setHits((prev) => prev.filter((h) => h.id !== hit.id))
         setTotal((t) => Math.max(0, t - 1))
@@ -599,6 +613,10 @@ export function SearchPage(): React.JSX.Element {
               onChange={(e) => setPriceMaxText(e.target.value)}
             />
           </div>
+          <label className="in-stock-toggle" title="关闭后显示已同步的售罄商品">
+            <Switch label="只看有货" checked={inStockOnly} onChange={setInStockOnly} />
+            <span>只看有货</span>
+          </label>
           <Button
             variant="ghost"
             size="s"

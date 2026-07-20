@@ -28,9 +28,7 @@ export function normalizeGoods(
 ): NormalizedShopProductRow | null {
   const key = item.goods_key
   if (!key) return null
-  const stock = item.extend?.stock_count ?? null
-  // Only keep positive stock in local DB
-  if (typeof stock !== 'number' || stock <= 0) return null
+  const stock = num(item.extend?.stock_count)
   const source = opts.profile.sourceId
   const id = `${source}:${opts.token}:${key}`
   return {

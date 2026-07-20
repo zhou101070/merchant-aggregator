@@ -5,6 +5,7 @@ import type {
   SyncStartRequest,
   SyncStatus
 } from '@shared/types/sync'
+import { useToast } from '../components/use-toast'
 import { onDataCleared } from '../lib/data-events'
 import { formatUserError } from '../lib/sync-labels'
 
@@ -21,11 +22,10 @@ export function useSyncStatus(): {
   startShopSelected: (merchantIds: string[]) => Promise<void>
   cancelRunning: () => Promise<void>
   busy: boolean
-  error: string | null
 } {
+  const toast = useToast()
   const [status, setStatus] = useState<SyncStatus | null>(null)
   const [progress, setProgress] = useState<SyncProgressEvent | null>(null)
-  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     const s = await window.api.sync.status()
@@ -65,15 +65,15 @@ export function useSyncStatus(): {
 
   const start = useCallback(
     async (jobType: SyncJobType, extra?: SyncStartExtra) => {
-      setError(null)
       try {
         await window.api.sync.start({ jobType, ...extra })
         await refresh()
       } catch (err) {
-        setError(formatUserError(err))
+        // toast 4s 自动消失；避免页面内 sticky banner 一直挂着
+        toast(formatUserError(err), 'fail')
       }
     },
-    [refresh]
+    [refresh, toast]
   )
 
   const cancelRunning = useCallback(async () => {
@@ -107,7 +107,6 @@ export function useSyncStatus(): {
     startShopAll,
     startShopSelected,
     cancelRunning,
-    busy,
-    error
+    busy
   }
 }

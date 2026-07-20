@@ -39,8 +39,7 @@ export function MerchantsPage(): React.JSX.Element {
     startShopAll,
     start,
     cancelRunning,
-    busy,
-    error
+    busy
   } = useSyncStatus()
   const confirm = useConfirm()
   const toast = useToast()
@@ -276,11 +275,6 @@ export function MerchantsPage(): React.JSX.Element {
         </span>
       </FilterBar>
 
-      {error ? (
-        <div className="panel" style={{ padding: '10px 14px' }}>
-          <StatusDot tone="fail">{error}</StatusDot>
-        </div>
-      ) : null}
       {busy ? (
         <div className="panel" style={{ padding: '10px 14px' }}>
           <StatusDot tone="warn">
@@ -304,7 +298,7 @@ export function MerchantsPage(): React.JSX.Element {
             actions={
               platformFilter === 'all' && healthFilter === 'all' && !debouncedQ ? (
                 <Button variant="primary" onClick={() => void startMerchants()} disabled={busy}>
-                  从 PriceAI 同步商家
+                  同步商家列表
                 </Button>
               ) : (
                 <Button
@@ -323,7 +317,7 @@ export function MerchantsPage(): React.JSX.Element {
               ? '「其他」为非链动/catfk 等未注册发卡站。'
               : platformFilter !== 'all' || healthFilter !== 'all' || debouncedQ
                 ? '试试放宽平台或健康状态筛选。'
-                : '商家主档来自 PriceAI，只需同步一次，之后按需更新。'}
+                : '商家列表来自 PriceAI / NodeBits；店内商品走全局深刮。列表同步一次即可，之后按需更新。'}
           </Empty>
         </div>
       ) : (

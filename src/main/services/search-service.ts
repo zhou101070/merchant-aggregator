@@ -24,7 +24,9 @@ import {
   type RankContext
 } from '@shared/lib/search-rank'
 import {
+  compactLetterVersion,
   isDurationToken,
+  isLetterVersionGroup,
   isVersionTailToken,
   likeContains,
   likeTokenBoundary,
@@ -207,8 +209,12 @@ export class SearchService {
   }
 
   /**
-   * Version tails (7 / 4o / 3.5): title only + whole-token on title_tokens.
-   * Avoids shop ids like "7878" matching query "grok7" via LIKE '%7%'.
+   * Version tails (7 / 4o) and letter+version codes (k12 / gpt4 surfaces):
+   * title only + whole-token on title_tokens.
+   * - Avoids shop ids like "7878" matching "7"
+   * - Avoids category "K12 gmail…" matching query k12 when title is unrelated
+   * - Avoids "Grok12个月" matching k12 via bare substring
+   * - Spaced surface "k 12" uses padded tokens so "k 120" does not match
    */
   private versionTitleMatchClause(paramKey: string): string {
     return `(
@@ -229,11 +235,15 @@ export class SearchService {
     params: Record<string, unknown>
   ): string[] {
     const versionOnly = group.length > 0 && group.every((v) => isVersionTailToken(v))
+    // k12 / gpt4 synonym surfaces: title whole-token only (not category/shop LIKE)
+    const letterVersion = !versionOnly && isLetterVersionGroup(group)
     return group.map((v, j) => {
       const key = `${keyPrefix}_${j}`
-      if (versionOnly) {
+      if (versionOnly || letterVersion) {
+        // likeTokenBoundary: "k12" → % k12 %; "k 12" → % k 12 % (won't hit k 120)
         params[key] = likeTokenBoundary(v)
-        params[`${key}_sub`] = likeContains(v)
+        // Legacy rows without title_tokens: compact form only (k12 not "k 12")
+        params[`${key}_sub`] = likeContains(compactLetterVersion(v) || v)
         return this.versionTitleMatchClause(key)
       }
       params[key] = likeContains(v)
@@ -285,8 +295,10 @@ export class SearchService {
             OR (b.target_type = 'merchant' AND b.target_id = s.merchant_id)
        )`
     )
-    // 搜索只展示可买库存；售罄/无库存不进结果
-    where.push(`(s.stock IS NOT NULL AND s.stock > 0)`)
+    // 默认只看有货；关闭后含售罄/无库存字段（仍按价过滤）
+    if (req.inStockOnly !== false) {
+      where.push(`(s.stock IS NOT NULL AND s.stock > 0)`)
+    }
     if (req.priceMin != null) {
       where.push(`s.price >= @priceMin`)
       params.priceMin = req.priceMin

@@ -109,7 +109,7 @@ describe('SearchService local-only shop_products', () => {
     }
   })
 
-  it('always excludes stock 0 / null rows', () => {
+  it('defaults inStockOnly=true and excludes stock 0 / null rows', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {
       seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
@@ -144,6 +144,54 @@ describe('SearchService local-only shop_products', () => {
       const res = search.query({ q: 'Claude', sort: 'score', limit: 20, offset: 0 })
       expect(res.hits.map((h) => h.title)).toEqual(['Claude 有货'])
       expect(res.total).toBe(1)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('inStockOnly=false includes OOS and null stock', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [{ id: 'm1', name: '好店', token: 'TOK1' }])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'Claude 有货',
+          price: 80,
+          stock: 3
+        },
+        {
+          id: 's2',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g2',
+          title: 'Claude 售罄',
+          price: 50,
+          stock: 0
+        }
+      ])
+      const f = productTitleSearchFields('Claude 无库存字段')
+      db.prepare(
+        `INSERT INTO shop_products (id, source, merchant_id, source_shop_token, source_goods_key, title, title_norm, title_tokens, price, currency, stock, fetched_at)
+         VALUES ('s3', 'ldxp', 'm1', 'TOK1', 'g3', ?, ?, ?, 40, 'CNY', NULL, 't')`
+      ).run('Claude 无库存字段', f.titleNorm, f.titleTokens)
+
+      const search = new SearchService(db)
+      const res = search.query({
+        q: 'Claude',
+        inStockOnly: false,
+        sort: 'stock',
+        sortDir: 'desc',
+        limit: 20,
+        offset: 0
+      })
+      expect(res.total).toBe(3)
+      expect(res.hits.map((h) => h.title).sort()).toEqual(
+        ['Claude 有货', 'Claude 售罄', 'Claude 无库存字段'].sort()
+      )
     } finally {
       closeDatabase(db)
     }
@@ -602,6 +650,79 @@ describe('SearchService local-only shop_products', () => {
       const empty = search.query({ q: 'grok 30天', sort: 'score' })
       expect(empty.total).toBe(0)
       expect(empty.emptyReason).toBe('NO_MATCH')
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
+  it('k12 matches title whole-token, not category-only or Grok12 substring', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [
+        { id: 'm1', name: '抢抢的AI小铺', token: 'TOK1' },
+        { id: 'm2', name: '光之国AI', token: 'TOK2' },
+        { id: 'm3', name: 'AI海外账号', token: 'TOK3' },
+        { id: 'm4', name: '老马AI', token: 'TOK4' },
+        { id: 'm5', name: 'L 龙崎', token: 'TOK5' }
+      ])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'GPT注册微软邮箱Outlook',
+          price: 0.08
+        },
+        {
+          id: 's2',
+          merchantId: 'm2',
+          token: 'TOK2',
+          key: 'g2',
+          title: 'Gpt Free（双接码 | 反代）| outlook | 长效邮箱',
+          price: 0.8
+        },
+        {
+          id: 's3',
+          merchantId: 'm3',
+          token: 'TOK3',
+          key: 'g3',
+          title: 'Claude Pro K12 一年会员 无质保',
+          price: 1299
+        },
+        {
+          id: 's4',
+          merchantId: 'm4',
+          token: 'TOK4',
+          key: 'g4',
+          title: '【官方直充】Super Grok12个月（包含同时长X Premium+会员）全程质保订阅',
+          price: 1499
+        },
+        {
+          id: 's5',
+          merchantId: 'm5',
+          token: 'TOK5',
+          key: 'g5',
+          title: '【Facebook】120天+/2FA/临时邮箱',
+          price: 18
+        }
+      ])
+      // Category folder names that contain "K12" but titles are unrelated emails
+      db.prepare(`UPDATE shop_products SET category_name = 'K12 gmail邮箱api' WHERE id = 's1'`).run()
+      db.prepare(
+        `UPDATE shop_products SET category_name = 'GPT 反代用（team、k12）' WHERE id = 's2'`
+      ).run()
+      db.prepare(`UPDATE shop_products SET category_name = 'Claude' WHERE id = 's3'`).run()
+      db.prepare(`UPDATE shop_products SET category_name = 'Grok' WHERE id = 's4'`).run()
+
+      const search = new SearchService(db)
+      const res = search.query({ q: 'k12', sort: 'price', sortDir: 'asc', limit: 50, offset: 0 })
+      const titles = res.hits.map((h) => h.title)
+      expect(titles).toEqual(['Claude Pro K12 一年会员 无质保'])
+      expect(titles.some((t) => t.includes('邮箱'))).toBe(false)
+      expect(titles.some((t) => t.includes('Grok12'))).toBe(false)
+      expect(titles.some((t) => t.includes('Facebook'))).toBe(false)
+      expect(res.total).toBe(1)
     } finally {
       closeDatabase(db)
     }

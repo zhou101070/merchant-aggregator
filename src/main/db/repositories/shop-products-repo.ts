@@ -111,9 +111,8 @@ export class ShopProductsRepo {
   }
 
   upsertMany(rows: NormalizedShopProductRow[]): number {
-    const keep = rows
-      .filter((r) => typeof r.stock === 'number' && r.stock > 0)
-      .map(withTitleSearchFields)
+    // Keep OOS / null stock so search can toggle "只看有货" offline.
+    const keep = rows.map(withTitleSearchFields)
     const tx = this.db.transaction((items: UpsertRow[]) => {
       for (const r of items) this.upsertStmt.run(r)
       return items.length
@@ -123,16 +122,14 @@ export class ShopProductsRepo {
 
   /**
    * Full replace for one shop after successful scrape:
-   * drop previous rows for (source, token), insert only stock > 0.
+   * drop previous rows for (source, token), insert all scraped rows (including OOS).
    */
   replaceForShop(
     source: string,
     token: string,
     rows: NormalizedShopProductRow[]
   ): { deleted: number; inserted: number } {
-    const keep = rows
-      .filter((r) => typeof r.stock === 'number' && r.stock > 0)
-      .map(withTitleSearchFields)
+    const keep = rows.map(withTitleSearchFields)
     const tx = this.db.transaction(() => {
       const del = this.db
         .prepare(`DELETE FROM shop_products WHERE source = ? AND source_shop_token = ?`)

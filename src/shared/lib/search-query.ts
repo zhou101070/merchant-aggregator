@@ -17,6 +17,24 @@ export function isVersionTailToken(token: string): boolean {
   return VERSION_TAIL.test(token)
 }
 
+/**
+ * Compact letter+version product code (k12, grok7, gpt4o).
+ * Used to tighten SQL recall: whole-token title match, not category substring.
+ */
+export function isLetterVersionToken(token: string): boolean {
+  return /^[a-z]+\d+[a-z0-9.]*$/i.test(token)
+}
+
+/** Strip spaces/hyphens so "k 12" / "k-12" → "k12". */
+export function compactLetterVersion(token: string): string {
+  return nameNorm(token).replace(/[\s-]/g, '')
+}
+
+/** Synonym group is (or expands from) a letter+version code like k12 / gpt4. */
+export function isLetterVersionGroup(group: string[]): boolean {
+  return group.some((v) => isLetterVersionToken(compactLetterVersion(v)))
+}
+
 /** True for duration tokens (e.g. 7天) — not model versions. */
 export function isDurationToken(token: string): boolean {
   return DURATION_TOKEN.test(token)

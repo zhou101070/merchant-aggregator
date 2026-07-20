@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  compactLetterVersion,
   escapeLike,
   isDurationToken,
+  isLetterVersionGroup,
+  isLetterVersionToken,
   isVersionTailToken,
   likeContains,
   likeTokenBoundary,
@@ -75,6 +78,17 @@ describe('tokenizeQuery', () => {
     expect(tokenizeQuery('K12')).toEqual(['k12'])
     expect(tokenizeQuery('k1')).toEqual(['k1'])
     expect(tokenizeQuery('12k')).toEqual(['12k'])
+  })
+
+  it('detects letter+version product codes', () => {
+    expect(isLetterVersionToken('k12')).toBe(true)
+    expect(isLetterVersionToken('gpt4o')).toBe(true)
+    expect(isLetterVersionToken('12')).toBe(false)
+    expect(isLetterVersionToken('claude')).toBe(false)
+    expect(compactLetterVersion('k 12')).toBe('k12')
+    expect(compactLetterVersion('k-12')).toBe('k12')
+    expect(isLetterVersionGroup(['k12', 'k 12', 'k-12'])).toBe(true)
+    expect(isLetterVersionGroup(['claude', '月卡'])).toBe(false)
   })
 
   it('keeps middle tokens so ordered multi-token queries stay AND', () => {

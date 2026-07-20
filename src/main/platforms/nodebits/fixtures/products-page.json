@@ -1,0 +1,58 @@
+{
+  "products": [
+    {
+      "id": "prod-ldxp-1",
+      "shop_id": "11111111-1111-1111-1111-111111111111",
+      "title": "ChatGPT Plus 月卡",
+      "normalized_title": "ChatGPT Plus",
+      "category": "ChatGPT",
+      "price": 12.5,
+      "currency": "CNY",
+      "product_url": "https://pay.ldxp.cn/shop/ABC12345/item/1",
+      "image_url": null,
+      "stock_status": "in_stock",
+      "raw_text": "{\"shopUrl\":\"https://pay.ldxp.cn/shop/ABC12345\",\"source\":\"ldxp\",\"typeName\":\"成品账号\"}",
+      "status": "active",
+      "last_seen_at": "2026-07-18T00:00:00.000Z",
+      "created_at": "2025-06-01T00:00:00.000Z",
+      "updated_at": "2026-07-18T00:00:00.000Z",
+      "product_type": "account",
+      "product_type_name": "成品账号",
+      "stock_count": 5,
+      "shops": { "name": "NodeBits 链动店" },
+      "store_name": "NodeBits 链动店"
+    },
+    {
+      "id": "prod-entry-1",
+      "shop_id": "22222222-2222-2222-2222-222222222222",
+      "title": "Gemini 额度",
+      "normalized_title": "Gemini API",
+      "category": "Gemini",
+      "price": 3.0,
+      "currency": "CNY",
+      "product_url": "https://example-shop.test/p/99",
+      "image_url": null,
+      "stock_status": "out_of_stock",
+      "raw_text": null,
+      "status": "active",
+      "last_seen_at": "2026-07-10T00:00:00.000Z",
+      "product_type_name": "API额度",
+      "stock_count": 0
+    },
+    {
+      "id": "prod-nolink-1",
+      "shop_id": "33333333-3333-3333-3333-333333333333",
+      "title": "无链接商品",
+      "normalized_title": "无链接商品",
+      "category": "其他",
+      "price": 1.0,
+      "currency": "CNY",
+      "product_url": null,
+      "stock_status": "in_stock",
+      "raw_text": null,
+      "last_seen_at": "2026-07-01T00:00:00.000Z",
+      "stock_count": 1
+    }
+  ],
+  "total": 3
+}

@@ -41,11 +41,11 @@ describe('commodity helpers', () => {
     expect(commodityPrice(item({ id: 1, name: 'a', user_price: null, price: 3 }))).toBe(3)
   })
 
-  it('filters hidden / inactive / oos', () => {
+  it('filters hidden / inactive; OOS still listed', () => {
     expect(isYiciyuanCommodityListed(item({ id: 1, name: 'a', stock: 1 }))).toBe(true)
     expect(isYiciyuanCommodityListed(item({ id: 1, name: 'a', status: 0, stock: 9 }))).toBe(false)
     expect(isYiciyuanCommodityListed(item({ id: 1, name: 'a', hide: 1, stock: 9 }))).toBe(false)
-    expect(isYiciyuanCommodityListed(item({ id: 1, name: 'a', stock: 0 }))).toBe(false)
+    expect(isYiciyuanCommodityListed(item({ id: 1, name: 'a', stock: 0 }))).toBe(true)
   })
 })
 
@@ -85,7 +85,7 @@ describe('normalizeYiciyuanCommodity', () => {
     ).toBeNull()
   })
 
-  it('normalizes list and drops oos', () => {
+  it('normalizes list including OOS; drops hidden', () => {
     const rows = normalizeYiciyuanCommodities(
       [
         item({ id: 1, name: 'ok', stock: 2 }),
@@ -94,6 +94,7 @@ describe('normalizeYiciyuanCommodity', () => {
       ],
       baseOpts
     )
-    expect(rows.map((r) => r.source_goods_key)).toEqual(['1'])
+    expect(rows.map((r) => r.source_goods_key)).toEqual(['1', '2'])
+    expect(rows.find((r) => r.source_goods_key === '2')?.stock).toBe(0)
   })
 })

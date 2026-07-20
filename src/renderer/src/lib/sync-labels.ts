@@ -42,6 +42,9 @@ const ERROR_HINT: Record<string, string> = {
 
 const CODE_PREFIX = /^([A-Z][A-Z0-9_]+):\s*/
 
+/** 纯英文技术句（无中文）——仅用于失败兜底，不用于成功/进行中 */
+const TECH_ENGLISH = /^[a-zA-Z0-9_ .:/\-(),+;]+$/
+
 export function jobTypeLabel(jobType?: string | null): string {
   if (!jobType) return '任务'
   return JOB_TYPE_LABEL[jobType] ?? jobType
@@ -71,7 +74,11 @@ export function formatUserError(err: unknown): string {
   return ERROR_HINT.INTERNAL
 }
 
-/** 任务摘要：英文 progress 转中文；技术句用错误码文案兜底 */
+function isFailedStatus(status?: string | null): boolean {
+  return status === 'failed' || status === 'partial' || status === 'cancelled'
+}
+
+/** 任务摘要：英文 progress 转中文；技术句仅在失败时用错误码文案兜底 */
 export function formatJobUserMessage(job: {
   message?: string | null
   errorCode?: string | null
@@ -79,6 +86,7 @@ export function formatJobUserMessage(job: {
 }): string {
   const msg = (job.message || '').trim()
   const hint = errorHint(job.errorCode)
+  const failed = isFailedStatus(job.status)
 
   if (msg === 'starting') return '启动中'
   if (msg === 'cancelled by user') return '已取消'
@@ -94,20 +102,55 @@ export function formatJobUserMessage(job: {
     return partial[4] ? `${base}，跳过 ${partial[4]} 家` : base
   }
 
-  // 进行中：ok/fail platform:token (n/m)
-  const shopStep = msg.match(/^(ok|fail|not-family)\s+\S+\s+\((\d+)\/(\d+)\)$/)
+  // 进行中：ok/fail/scraping/not-family platform:token (n/m)
+  const shopStep = msg.match(/^(ok|fail|not-family|scraping)\s+\S+\s+\((\d+)\/(\d+)\)$/)
   if (shopStep) {
     const label =
-      shopStep[1] === 'ok' ? '完成' : shopStep[1] === 'not-family' ? '指纹不符' : '失败'
+      shopStep[1] === 'ok'
+        ? '完成'
+        : shopStep[1] === 'not-family'
+          ? '指纹不符'
+          : shopStep[1] === 'scraping'
+            ? '刮取中'
+            : '失败'
     return `${label} ${shopStep[2]}/${shopStep[3]}`
   }
 
-  if (hint) return hint
-  if (!msg) return ''
-  // 仍是开发向英文则兜底
-  if (/^[a-zA-Z0-9_ .:/\-(),]+$/.test(msg) && /[a-z]/.test(msg)) {
-    return ERROR_HINT.INTERNAL
+  const page = msg.match(/^page (\d+)$/)
+  if (page) return `第 ${page[1]} 页`
+
+  const probe = msg.match(/^probe yiciyuan (\S+) \((\d+)\/(\d+)\)$/)
+  if (probe) return `探测 ${probe[1]}（${probe[2]}/${probe[3]}）`
+
+  const fingerprint = msg.match(/^fingerprint matched (\d+), rejected (\d+)$/)
+  if (fingerprint) return `指纹匹配 ${fingerprint[1]}，拒绝 ${fingerprint[2]}`
+
+  const upserted = msg.match(
+    /^upserted (\d+), dropped no-link (\d+), deleted stale (\d+), fingerprint \+(\d+)\/-(\d+)$/
+  )
+  if (upserted) {
+    return `写入 ${upserted[1]} 家，无链接丢弃 ${upserted[2]}，清理陈旧 ${upserted[3]}，指纹 +${upserted[4]}/-${upserted[5]}`
   }
+
+  const bootstrapFresh = msg.match(/^merchants (\d+); top shops all fresh$/)
+  if (bootstrapFresh) return `商家 ${bootstrapFresh[1]} 家；热门店铺均已新鲜`
+
+  if (msg === 'nothing to sync (fresh or disabled platforms)') {
+    return '无需同步（均已新鲜或平台未启用）'
+  }
+
+  // 有错误码：失败摘要优先用码表（避免把英文技术句直接摊给用户）
+  if (hint && (failed || job.errorCode)) return hint
+
+  if (!msg) return hint ?? ''
+
+  // 仅失败态才把未知英文技术句收成通用错误；成功/进行中保留或用空串避免误报
+  if (TECH_ENGLISH.test(msg) && /[a-z]/.test(msg)) {
+    if (failed || job.errorCode) return hint ?? ERROR_HINT.INTERNAL
+    // 进行中/成功但未收录的英文：不显示吓人的「出错了」
+    return ''
+  }
+
   return msg
 }
 

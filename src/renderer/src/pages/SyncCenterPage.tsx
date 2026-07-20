@@ -255,8 +255,7 @@ export function SyncCenterPage(): React.JSX.Element {
     startShopSelected,
     cancelRunning,
     refresh,
-    busy,
-    error
+    busy
   } = useSyncStatus()
   const confirm = useConfirm()
   const toast = useToast()
@@ -376,7 +375,7 @@ export function SyncCenterPage(): React.JSX.Element {
     <div className="stack">
       <PageHeader
         title="同步"
-        meta="商家来自 PriceAI · 价格来自发卡网深刮 · 全部手动发起"
+        meta="商家列表：PriceAI / NodeBits · 商品与平台识别：全局深刮 · 全部手动发起"
         actions={
           <>
             {busy ? <Button onClick={() => void cancelRunning()}>取消</Button> : null}
@@ -393,12 +392,6 @@ export function SyncCenterPage(): React.JSX.Element {
           </>
         }
       />
-
-      {error ? (
-        <div className="panel" style={{ padding: '10px 14px' }}>
-          <StatusDot tone="fail">{error}</StatusDot>
-        </div>
-      ) : null}
 
       <div className="panel" style={{ padding: '14px 16px' }}>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>

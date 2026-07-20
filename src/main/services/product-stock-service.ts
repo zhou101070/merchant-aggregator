@@ -95,17 +95,6 @@ export class ProductStockService {
       return { status: 'not_found', productId }
     }
 
-    const stock =
-      typeof item.extend?.stock_count === 'number' && Number.isFinite(item.extend.stock_count)
-        ? item.extend.stock_count
-        : null
-
-    if (typeof stock !== 'number' || stock <= 0) {
-      this.repos.shopProducts.deleteById(productId)
-      log.info('stock refresh removed oos', { productId, stock })
-      return { status: 'removed', productId, stock }
-    }
-
     const row = normalizeGoods(item, {
       profile,
       token,
@@ -115,12 +104,12 @@ export class ProductStockService {
       fetchedAt: new Date().toISOString()
     })
     if (!row) {
-      this.repos.shopProducts.deleteById(productId)
-      return { status: 'removed', productId, stock }
+      return { status: 'not_found', productId }
     }
 
     this.repos.shopProducts.upsertMany([row])
     const product = this.repos.shopProducts.getById(row.id)
+    const stock = row.stock ?? 0
     log.info('stock refresh updated', { productId: row.id, stock })
     return {
       status: 'updated',
@@ -154,8 +143,9 @@ export class ProductStockService {
 
     const row = rows[0]
     if (!row) {
+      // Product gone from catalog (not merely OOS)
       this.repos.shopProducts.deleteById(productId)
-      log.info('dujiao stock refresh removed oos/missing', { productId })
+      log.info('dujiao stock refresh removed missing', { productId })
       return { status: 'removed', productId, stock: 0 }
     }
 
@@ -193,8 +183,9 @@ export class ProductStockService {
     })
 
     if (!row) {
+      // Hidden / delisted / missing — not mere OOS
       this.repos.shopProducts.deleteById(productId)
-      log.info('yiciyuan stock refresh removed oos/missing', { productId })
+      log.info('yiciyuan stock refresh removed missing', { productId })
       return { status: 'removed', productId, stock: 0 }
     }
 

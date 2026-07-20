@@ -35,7 +35,7 @@ export function useRefreshStock(): {
           toast(`库存已更新：${res.stock}`, 'ok')
         } else if (res.status === 'removed') {
           handlers?.onRemoved?.(res)
-          toast('库存为 0，已从本地移除', 'ok')
+          toast('商品已下架，已从本地移除', 'ok')
         } else {
           toast('未在店内找到该商品（标题可能已变更）', 'fail')
         }

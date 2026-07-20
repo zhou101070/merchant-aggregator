@@ -8,8 +8,8 @@ export function bootstrapSpec(): ConfirmSpec {
   return {
     title: '一键初始化',
     body:
-      '同步 PriceAI 商家列表，并抓取报价数 Top 50 的可深刮店铺商品。\n' +
-      '将访问 priceai.cc 与已注册发卡网，可能需要十几分钟，可随时取消。',
+      '同步商家列表（PriceAI / NodeBits），再按全局平台识别深刮报价数 Top 50 的可刮店铺。\n' +
+      '将访问 priceai.cc、nodebits.xyz 与已注册发卡网，可能需要十几分钟，可随时取消。',
     confirmLabel: '开始同步'
   }
 }

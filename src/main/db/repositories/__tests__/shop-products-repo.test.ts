@@ -33,7 +33,7 @@ function row(
 }
 
 describe('ShopProductsRepo stock policy', () => {
-  it('upsertMany skips stock <= 0 and null', () => {
+  it('upsertMany keeps stock <= 0 and null', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {
       const repo = new ShopProductsRepo(db)
@@ -43,9 +43,12 @@ describe('ShopProductsRepo stock policy', () => {
         row({ source_goods_key: 'c', stock: null }),
         row({ source_goods_key: 'd', stock: -1 })
       ])
-      expect(n).toBe(1)
-      expect(repo.count()).toBe(1)
+      expect(n).toBe(4)
+      expect(repo.count()).toBe(4)
       expect(repo.getById('ldxp:tk1:a')?.stock).toBe(5)
+      expect(repo.getById('ldxp:tk1:b')?.stock).toBe(0)
+      expect(repo.getById('ldxp:tk1:c')?.stock).toBeNull()
+      expect(repo.getById('ldxp:tk1:d')?.stock).toBe(-1)
     } finally {
       closeDatabase(db)
     }
@@ -68,7 +71,7 @@ describe('ShopProductsRepo stock policy', () => {
     }
   })
 
-  it('replaceForShop deletes previous shop rows then inserts in-stock only', () => {
+  it('replaceForShop deletes previous shop rows then inserts all including OOS', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {
       const repo = new ShopProductsRepo(db)
@@ -84,10 +87,10 @@ describe('ShopProductsRepo stock policy', () => {
         row({ source_goods_key: 'old1', stock: 1 })
       ])
       expect(r.deleted).toBe(2)
-      expect(r.inserted).toBe(2)
-      expect(repo.count()).toBe(2)
+      expect(r.inserted).toBe(3)
+      expect(repo.count()).toBe(3)
       expect(repo.getById('ldxp:tk1:old2')).toBeNull()
-      expect(repo.getById('ldxp:tk1:gone')).toBeNull()
+      expect(repo.getById('ldxp:tk1:gone')?.stock).toBe(0)
       expect(repo.getById('ldxp:tk1:new1')?.stock).toBe(9)
       expect(repo.getById('ldxp:tk1:old1')?.stock).toBe(1)
     } finally {
@@ -95,12 +98,12 @@ describe('ShopProductsRepo stock policy', () => {
     }
   })
 
-  it('replaceForShop with empty keep clears the shop', () => {
+  it('replaceForShop with empty rows clears the shop', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {
       const repo = new ShopProductsRepo(db)
       repo.upsertMany([row({ source_goods_key: 'x', stock: 1 })])
-      const r = repo.replaceForShop('ldxp', 'tk1', [row({ source_goods_key: 'x', stock: 0 })])
+      const r = repo.replaceForShop('ldxp', 'tk1', [])
       expect(r.deleted).toBe(1)
       expect(r.inserted).toBe(0)
       expect(repo.count()).toBe(0)

@@ -31,6 +31,8 @@ import type { Repositories } from '../db/repositories'
 import { createLogger } from '../utils/logger'
 import { fetchAllMerchants } from '../platforms/priceai/fetcher-merchants'
 import { PriceaiClient } from '../platforms/priceai/client'
+import { fetchAllNodebitsMerchants } from '../platforms/nodebits/fetcher-merchants'
+import { NodebitsClient } from '../platforms/nodebits/client'
 import { scrapeShopTarget, type ShopScrapeTarget } from '../platforms/registry'
 import type { JobPoolSnapshot } from '@shared/types/sync'
 
@@ -535,6 +537,9 @@ export class SyncOrchestrator {
       deletedNoLink: number
       fingerprintMatched: number
       fingerprintRejected: number
+      nodebitsUpserted: number
+      nodebitsDroppedNoLink: number
+      nodebitsShopsFetched: number
     }
   > {
     const result = await fetchAllMerchants({
@@ -542,12 +547,68 @@ export class SyncOrchestrator {
       intervalMs,
       signal,
       onProgress: (p) =>
-        this.progress(jobId, jobType, 'merchants', p.current, p.total, `page ${p.page}`)
+        this.progress(
+          jobId,
+          jobType,
+          'merchants',
+          p.current,
+          p.total,
+          `PriceAI page ${p.page}`
+        )
     })
     this.repos.merchants.upsertMany(result.rows)
+
+    // Second merchant-list source only. Product scrape + platform id stay global
+    // (registry / identifyShopPlatform), same as merchants that came from PriceAI.
+    const settings = this.repos.settings.get()
+    const nodebitsClient = new NodebitsClient({ userAgent: settings.priceaiUa })
+    let nodebitsUpserted = 0
+    let nodebitsDroppedNoLink = 0
+    let nodebitsShopsFetched = 0
+    try {
+      const nb = await fetchAllNodebitsMerchants({
+        client: nodebitsClient,
+        intervalMs,
+        signal,
+        onProgress: (p) => {
+          const label =
+            p.phase === 'shops'
+              ? 'NodeBits 店铺列表'
+              : p.phase === 'products'
+                ? 'NodeBits 补全店铺链接'
+                : 'NodeBits 归一化'
+          this.progress(jobId, jobType, 'merchants', p.current, p.total, label)
+        }
+      })
+      nodebitsUpserted = this.repos.merchants.upsertMany(nb.rows)
+      nodebitsDroppedNoLink = nb.droppedNoLink
+      nodebitsShopsFetched = nb.shopsFetched
+      log.info('nodebits merchants upserted', {
+        rows: nb.rows.length,
+        shopsFetched: nb.shopsFetched,
+        droppedNoLink: nb.droppedNoLink,
+        droppedTest: nb.droppedTest
+      })
+    } catch (err) {
+      // PriceAI is primary; NodeBits failure should not wipe a successful PriceAI pull.
+      if (err instanceof AppError && err.code === 'CANCELLED') throw err
+      log.warn('nodebits merchants fetch failed (continuing with PriceAI only)', {
+        error: err instanceof Error ? err.message : String(err)
+      })
+    }
+
     const deletedNoLink = this.repos.merchants.deleteWithoutExternalLinks()
     const fp = await this.probeYiciyuanCandidates(jobId, jobType, signal, intervalMs)
-    return { ...result, deletedNoLink, ...fp }
+    return {
+      ...result,
+      // total kept for progress: PriceAI unique + NodeBits kept
+      rows: result.rows,
+      deletedNoLink,
+      nodebitsUpserted,
+      nodebitsDroppedNoLink,
+      nodebitsShopsFetched,
+      ...fp
+    }
   }
 
   /**
@@ -620,13 +681,14 @@ export class SyncOrchestrator {
     intervalMs: number
   ): Promise<void> {
     const result = await this.fetchMerchantsPhase(jobId, 'merchants', signal, client, intervalMs)
+    const totalUpserted = result.rows.length + result.nodebitsUpserted
     this.finishSuccess(
       jobId,
       'merchants',
       'merchants',
-      result.rows.length,
-      result.total,
-      `upserted ${result.rows.length}, dropped no-link ${result.droppedNoLink}, deleted stale ${result.deletedNoLink}, fingerprint +${result.fingerprintMatched}/-${result.fingerprintRejected}`,
+      totalUpserted,
+      result.total + result.nodebitsShopsFetched,
+      `upserted ${totalUpserted} (PriceAI ${result.rows.length}, NodeBits ${result.nodebitsUpserted}), dropped no-link ${result.droppedNoLink + result.nodebitsDroppedNoLink}, deleted stale ${result.deletedNoLink}, fingerprint +${result.fingerprintMatched}/-${result.fingerprintRejected}`,
       {
         pages: result.pages,
         generatedAt: result.generatedAt,
@@ -634,7 +696,10 @@ export class SyncOrchestrator {
         droppedNoLink: result.droppedNoLink,
         deletedNoLink: result.deletedNoLink,
         fingerprintMatched: result.fingerprintMatched,
-        fingerprintRejected: result.fingerprintRejected
+        fingerprintRejected: result.fingerprintRejected,
+        nodebitsUpserted: result.nodebitsUpserted,
+        nodebitsDroppedNoLink: result.nodebitsDroppedNoLink,
+        nodebitsShopsFetched: result.nodebitsShopsFetched
       }
     )
   }

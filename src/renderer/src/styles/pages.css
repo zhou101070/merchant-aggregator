@@ -55,6 +55,17 @@
   color: var(--ink-3);
   line-height: 1;
 }
+.in-stock-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  font-size: var(--text-s);
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
 .price-input {
   width: 64px;
   height: 26px;

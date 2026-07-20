@@ -134,25 +134,30 @@ describe('normalizeDujiaoProduct', () => {
       }),
       baseOpts
     )
-    expect(rows).toHaveLength(1)
-    expect(rows[0].source_goods_key).toBe('gptplus#11')
+    // Active SKUs only (inactive #99 dropped); OOS #7 still stored
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.source_goods_key)).toEqual(['gptplus#11', 'gptplus#7'])
     expect(rows[0].title).toBe('Plus 成品 · 微软邮箱')
     expect(rows[0].price).toBe(10)
     expect(rows[0].stock).toBe(7)
+    expect(rows[1].title).toBe('Plus 成品 · icloud')
+    expect(rows[1].price).toBe(18)
+    expect(rows[1].stock).toBe(0)
   })
 
-  it('skips sold out / zero stock', () => {
-    expect(
-      normalizeDujiaoProduct(
-        product({
-          slug: 'oos',
-          is_sold_out: true,
-          auto_stock_available: 0,
-          skus: [{ id: 1, auto_stock_available: 0, is_active: true }]
-        }),
-        baseOpts
-      )
-    ).toEqual([])
+  it('keeps sold out / zero stock rows', () => {
+    const rows = normalizeDujiaoProduct(
+      product({
+        slug: 'oos',
+        is_sold_out: true,
+        auto_stock_available: 0,
+        skus: [{ id: 1, auto_stock_available: 0, is_active: true }]
+      }),
+      baseOpts
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0].source_goods_key).toBe('oos')
+    expect(rows[0].stock).toBe(0)
   })
 
   it('onlyGoodsKey filters sku row', () => {
@@ -180,7 +185,8 @@ describe('normalizeDujiaoProducts', () => {
       ],
       baseOpts
     )
-    expect(rows.map((r) => r.source_goods_key)).toEqual(['a'])
+    expect(rows.map((r) => r.source_goods_key)).toEqual(['a', 'b'])
+    expect(rows.find((r) => r.source_goods_key === 'b')?.stock).toBe(0)
   })
 })
 

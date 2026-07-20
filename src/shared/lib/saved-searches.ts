@@ -34,7 +34,8 @@ export function normalizeSavedSearches(raw: unknown): SavedSearch[] {
     const titleExcludes = Array.isArray(o.titleExcludes)
       ? o.titleExcludes.filter((s): s is string => typeof s === 'string')
       : []
-    const inStockOnly = Boolean(o.inStockOnly)
+    // Default true when missing (matches search default “只看有货”)
+    const inStockOnly = o.inStockOnly === undefined ? true : Boolean(o.inStockOnly)
     const priceMin =
       typeof o.priceMin === 'number' && Number.isFinite(o.priceMin) ? o.priceMin : undefined
     const priceMax =
@@ -47,11 +48,11 @@ export function normalizeSavedSearches(raw: unknown): SavedSearch[] {
     const sortDir = o.sortDir === 'asc' || o.sortDir === 'desc' ? o.sortDir : 'desc'
     const createdAt =
       typeof o.createdAt === 'string' && o.createdAt ? o.createdAt : new Date().toISOString()
+    // inStockOnly alone is not a save signal (default true would keep junk entries)
     const hasSignal =
       Boolean(q.trim()) ||
       titleContains.length > 0 ||
       titleExcludes.length > 0 ||
-      inStockOnly ||
       priceMin != null ||
       priceMax != null ||
       Boolean(merchantName)

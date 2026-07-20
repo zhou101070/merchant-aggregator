@@ -17,11 +17,11 @@ function resolveImage(baseUrl: string, cover: string | null | undefined): string
   return `${baseUrl.replace(/\/$/, '')}/${t}`
 }
 
-/** Visible + in stock. */
+/** Visible on shop (status/hide); OOS is still listed and stored. */
 export function isYiciyuanCommodityListed(c: YiciyuanCommodity): boolean {
   if (c.status != null && Number(c.status) !== 1) return false
   if (c.hide != null && Number(c.hide) === 1) return false
-  return commodityStock(c) > 0
+  return true
 }
 
 export function commodityStock(c: YiciyuanCommodity): number {
