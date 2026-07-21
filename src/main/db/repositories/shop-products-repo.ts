@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { productTitleSearchFields } from '@shared/lib/search-query'
 import type { ShopProduct, ShopProductListQuery } from '@shared/types/product'
 
 export interface NormalizedShopProductRow {
@@ -24,7 +25,24 @@ export interface NormalizedShopProductRow {
   raw_json: string
 }
 
-interface ShopRow extends NormalizedShopProductRow {}
+interface ShopRow extends NormalizedShopProductRow {
+  title_norm?: string | null
+  title_tokens?: string | null
+}
+
+type UpsertRow = NormalizedShopProductRow & {
+  title_norm: string
+  title_tokens: string
+}
+
+function withTitleSearchFields(row: NormalizedShopProductRow): UpsertRow {
+  const f = productTitleSearchFields(row.title)
+  return {
+    ...row,
+    title_norm: f.titleNorm,
+    title_tokens: f.titleTokens
+  }
+}
 
 function mapRow(row: ShopRow): ShopProduct {
   return {
@@ -52,11 +70,11 @@ function mapRow(row: ShopRow): ShopProduct {
 const UPSERT = `
 INSERT INTO shop_products (
   id, source, merchant_id, source_shop_token, source_goods_key, source_url, shop_name,
-  title, price, market_price, currency, goods_type, category_id, category_name,
+  title, title_norm, title_tokens, price, market_price, currency, goods_type, category_id, category_name,
   stock, image, description_text, description_html, fetched_at, raw_json
 ) VALUES (
   @id, @source, @merchant_id, @source_shop_token, @source_goods_key, @source_url, @shop_name,
-  @title, @price, @market_price, @currency, @goods_type, @category_id, @category_name,
+  @title, @title_norm, @title_tokens, @price, @market_price, @currency, @goods_type, @category_id, @category_name,
   @stock, @image, @description_text, @description_html, @fetched_at, @raw_json
 )
 ON CONFLICT(source, source_shop_token, source_goods_key) DO UPDATE SET
@@ -65,6 +83,8 @@ ON CONFLICT(source, source_shop_token, source_goods_key) DO UPDATE SET
   source_url = excluded.source_url,
   shop_name = excluded.shop_name,
   title = excluded.title,
+  title_norm = excluded.title_norm,
+  title_tokens = excluded.title_tokens,
   price = excluded.price,
   market_price = excluded.market_price,
   currency = excluded.currency,
@@ -91,11 +111,43 @@ export class ShopProductsRepo {
   }
 
   upsertMany(rows: NormalizedShopProductRow[]): number {
-    const tx = this.db.transaction((items: NormalizedShopProductRow[]) => {
+    // Keep OOS / null stock so search can toggle "只看有货" offline.
+    const keep = rows.map(withTitleSearchFields)
+    const tx = this.db.transaction((items: UpsertRow[]) => {
       for (const r of items) this.upsertStmt.run(r)
       return items.length
     })
-    return tx(rows)
+    return tx(keep)
+  }
+
+  /**
+   * Full replace for one shop after successful scrape:
+   * drop previous rows for (source, token), insert all scraped rows (including OOS).
+   */
+  replaceForShop(
+    source: string,
+    token: string,
+    rows: NormalizedShopProductRow[]
+  ): { deleted: number; inserted: number } {
+    const keep = rows.map(withTitleSearchFields)
+    const tx = this.db.transaction(() => {
+      const del = this.db
+        .prepare(`DELETE FROM shop_products WHERE source = ? AND source_shop_token = ?`)
+        .run(source, token)
+      for (const r of keep) this.upsertStmt.run(r)
+      return { deleted: del.changes, inserted: keep.length }
+    })
+    return tx()
+  }
+
+  getById(id: string): ShopProduct | null {
+    const row = this.db.prepare(`SELECT * FROM shop_products WHERE id = ?`).get(id) as ShopRow | undefined
+    return row ? mapRow(row) : null
+  }
+
+  deleteById(id: string): boolean {
+    const r = this.db.prepare(`DELETE FROM shop_products WHERE id = ?`).run(id)
+    return r.changes > 0
   }
 
   list(query: ShopProductListQuery): { rows: ShopProduct[]; total: number } {

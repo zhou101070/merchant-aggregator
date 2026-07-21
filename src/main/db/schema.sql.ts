@@ -180,6 +180,43 @@ ALTER TABLE merchants ADD COLUMN app_health_at TEXT;
 ALTER TABLE merchants ADD COLUMN app_health_message TEXT;
 `
 
+/** Schema version 6 — local blocklist for search. */
+export const SCHEMA_V6_SQL = `
+CREATE TABLE IF NOT EXISTS blocked_targets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  title_snapshot TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (target_type, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_blocked_targets_type ON blocked_targets(target_type);
+`
+
+/** Schema version 7 — product title search index fields (norm + tokens). */
+export const SCHEMA_V7_SQL = `
+CREATE INDEX IF NOT EXISTS idx_shop_products_title_norm ON shop_products(title_norm);
+`
+
+/** Schema version 11 — proxy nodes proven unusable for a platform (expiring). Kept for historical migrate. */
+export const SCHEMA_V11_SQL = `
+CREATE TABLE IF NOT EXISTS platform_bad_nodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform_id TEXT NOT NULL,
+  node_name TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  UNIQUE (platform_id, node_name)
+);
+CREATE INDEX IF NOT EXISTS idx_platform_bad_nodes_platform ON platform_bad_nodes(platform_id);
+`
+
+/** Schema version 12 — drop platform_bad_nodes (built-in proxy removed). */
+export const SCHEMA_V12_SQL = `
+DROP TABLE IF EXISTS platform_bad_nodes;
+`
+
 export const REQUIRED_TABLES = [
   'schema_migrations',
   'merchants',
@@ -187,5 +224,6 @@ export const REQUIRED_TABLES = [
   'favorites',
   'recent_views',
   'sync_jobs',
-  'app_settings'
+  'app_settings',
+  'blocked_targets'
 ] as const

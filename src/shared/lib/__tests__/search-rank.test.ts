@@ -1,0 +1,174 @@
+import { describe, expect, it } from 'vitest'
+import {
+  adjacentPairBonus,
+  compareRelevance,
+  computeIdfFromRows,
+  expandTokenGroups,
+  groupMatchesRecall,
+  idfWeight,
+  inQueryOrder,
+  scoreShopRank,
+  synonymGroup,
+  wholeLatinWord
+} from '../search-rank'
+import { tokenizeQuery } from '../search-query'
+
+function ctx(q: string, idfEntries: Array<[string, number]> = []): Parameters<typeof scoreShopRank>[1] {
+  const tokens = tokenizeQuery(q)
+  const tokenGroups = expandTokenGroups(tokens)
+  const idf = new Map(idfEntries)
+  for (const t of tokens) {
+    const n = t
+    if (!idf.has(n)) idf.set(n, 1.5)
+  }
+  return { q, tokens, tokenGroups, idf, nowMs: Date.parse('2026-07-17T12:00:00Z') }
+}
+
+describe('search-rank', () => {
+  it('expands product synonyms', () => {
+    expect(synonymGroup('gpt4')).toEqual(expect.arrayContaining(['gpt4', 'chatgpt', 'gpt-4', 'gpt 4']))
+    expect(synonymGroup('月卡')).toEqual(expect.arrayContaining(['月卡', 'monthly']))
+    // bare '+' must not alias plus (would match any title containing +)
+    expect(synonymGroup('plus')).toEqual(['plus'])
+    expect(synonymGroup('plus')).not.toContain('+')
+    expect(synonymGroup('team')).toEqual(expect.arrayContaining(['team', '团队']))
+  })
+
+  it('whole Latin word does not match substrings (team ≠ steam)', () => {
+    expect(wholeLatinWord('chatgpt team 月卡', 'team')).toBe(true)
+    expect(wholeLatinWord('steam 账号', 'team')).toBe(false)
+    expect(wholeLatinWord('claude pro月卡', 'pro')).toBe(true)
+    expect(wholeLatinWord('improvement', 'pro')).toBe(false)
+  })
+
+  it('latin-word groups recall title only (category team does not count)', () => {
+    const group = synonymGroup('team')
+    expect(
+      groupMatchesRecall(
+        { titleN: 'chatgpt team 月卡', catN: '', typeN: '', shopN: '' },
+        group
+      )
+    ).toBe(true)
+    expect(
+      groupMatchesRecall(
+        { titleN: 'chatgpt 团队版', catN: '', typeN: '', shopN: '' },
+        group
+      )
+    ).toBe(true)
+    expect(
+      groupMatchesRecall(
+        {
+          titleN: 'codex 接码 美区',
+          catN: 'gpt 反代用（team、k12）',
+          typeN: '',
+          shopN: ''
+        },
+        group
+      )
+    ).toBe(false)
+    expect(
+      groupMatchesRecall(
+        { titleN: 'steam 成品号', catN: '', typeN: '', shopN: '' },
+        group
+      )
+    ).toBe(false)
+  })
+
+  it('alnum surface forms cover glued / spaced / hyphen versions', () => {
+    expect(synonymGroup('grok7')).toEqual(expect.arrayContaining(['grok7', 'grok 7', 'grok-7']))
+    expect(tokenizeQuery('grok 7')).toEqual(tokenizeQuery('grok7'))
+  })
+
+  it('ordered non-adjacent version match: grok … 7 in title', () => {
+    const tokens = tokenizeQuery('grok 7')
+    const groups = expandTokenGroups(tokens)
+    expect(groups).toHaveLength(2)
+    expect(inQueryOrder('grok super long filler then 7 day', groups)).toBe(true)
+    expect(inQueryOrder('7 day then grok', groups)).toBe(false)
+    // gpt4 still collapses to product synonyms (one group)
+    expect(expandTokenGroups(tokenizeQuery('gpt4')).length).toBe(1)
+    expect(expandTokenGroups(tokenizeQuery('gpt4'))[0]).toEqual(
+      expect.arrayContaining(['chatgpt', 'gpt4'])
+    )
+  })
+
+  it('prefers full title coverage over shop-name only hits', () => {
+    const c = ctx('Claude 月卡', [
+      ['claude', 1.2],
+      ['月卡', 2.0]
+    ])
+    const titleHit = scoreShopRank(
+      {
+        title: 'Claude Pro 月卡',
+        shopName: '好店',
+        stock: 5,
+        merchantHealth: 'healthy',
+        fetchedAt: '2026-07-17T10:00:00Z'
+      },
+      c
+    )
+    const shopOnly = scoreShopRank(
+      {
+        title: '无关商品',
+        shopName: 'Claude 专营',
+        stock: 5,
+        merchantHealth: 'healthy',
+        fetchedAt: '2026-07-17T10:00:00Z'
+      },
+      c
+    )
+    expect(titleHit).toBeGreaterThan(shopOnly + 20)
+  })
+
+  it('rewards query order and adjacency in title', () => {
+    const groups = expandTokenGroups(['claude', '月卡'])
+    expect(inQueryOrder('claude pro 月卡', groups)).toBe(true)
+    expect(inQueryOrder('月卡 claude pro', groups)).toBe(false)
+    expect(adjacentPairBonus('claude 月卡 质保', groups)).toBeGreaterThan(
+      adjacentPairBonus('claude 超级加长无关描述然后才是 月卡', groups)
+    )
+  })
+
+  it('idfWeight grows when document frequency is low', () => {
+    expect(idfWeight(1000, 2)).toBeGreaterThan(idfWeight(1000, 200))
+  })
+
+  it('computeIdfFromRows weights rare tokens higher within candidates', () => {
+    const tokens = ['claude', '月卡']
+    const groups = expandTokenGroups(tokens)
+    // claude in 1/4 rows, 月卡 in 3/4 → claude rarer → higher idf
+    const idf = computeIdfFromRows(
+      [
+        { title: 'Claude Pro 月卡' },
+        { title: 'GPT 月卡' },
+        { title: '邮箱 月卡' },
+        { title: '无关商品' }
+      ],
+      tokens,
+      groups
+    )
+    expect(idf.get('claude')!).toBeGreaterThan(idf.get('月卡')!)
+  })
+
+  it('compareRelevance uses stock then price then id', () => {
+    const a = {
+      id: 'a',
+      score: 10,
+      stockCount: 0,
+      price: 1,
+      merchantHealth: 'healthy',
+      fetchedAt: '2026-07-01'
+    }
+    const b = {
+      id: 'b',
+      score: 10,
+      stockCount: 3,
+      price: 50,
+      merchantHealth: 'healthy',
+      fetchedAt: '2026-07-01'
+    }
+    expect(compareRelevance(a, b)).toBeGreaterThan(0) // b better (in stock)
+    const c = { ...b, id: 'c', price: 10 }
+    expect(compareRelevance(b, c)).toBeGreaterThan(0) // c cheaper
+  })
+})

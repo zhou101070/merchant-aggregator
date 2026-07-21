@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   SyncHistoryStatusFilter,
+  SyncHttpRequestEntry,
   SyncJobRecord,
   SyncProgressEvent
 } from '@shared/types/sync'
+import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { Button, Empty, IconButton, Progress, StatusDot } from '../components/ui'
+import { PageHeader, PanelHeader } from '../components/layout'
+import { ModalDialog, ModalDialogTitle } from '../components/modal-dialog'
+import { useModalDismiss } from '../components/use-modal-dismiss'
 import { Pagination } from '../components/pagination'
 import { Select } from '../components/select'
 import { Icon } from '../components/icons'
@@ -13,7 +17,18 @@ import { useConfirm } from '../components/use-confirm'
 import { useToast } from '../components/use-toast'
 import { useSyncStatus } from '../hooks/useSync'
 import { shopAllSpec } from '../lib/confirm-sync'
-import { errorHint, formatSyncProgress, jobTypeLabel, phaseLabel } from '../lib/sync-labels'
+import {
+  errorHint,
+  formatDurationMs,
+  formatElapsed,
+  formatEta,
+  formatJobUserMessage,
+  formatSyncProgress,
+  formatUserError,
+  jobTypeLabel,
+  parseShopProgressMessage,
+  phaseLabel
+} from '../lib/sync-labels'
 import { timeAgo } from '../lib/format-time'
 
 const HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50] as const
@@ -62,33 +77,13 @@ function jobFailure(meta: Record<string, unknown> | null): JobFailure | null {
   return raw as JobFailure
 }
 
-function formatAbs(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const t = new Date(iso)
-  if (!Number.isFinite(t.getTime())) return iso
-  return t.toLocaleString()
-}
-
-function formatDetails(details: unknown): string | null {
-  if (details == null) return null
-  if (typeof details === 'string') return details
-  try {
-    return JSON.stringify(details, null, 2)
-  } catch {
-    return String(details)
-  }
-}
-
 function metaNumber(meta: Record<string, unknown> | null, key: string): number | null {
   const v = meta?.[key]
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
 /** 用 IPC 实时 progress 覆盖历史快照中的进度字段 */
-function withLiveProgress(
-  job: SyncJobRecord,
-  progress: SyncProgressEvent | null
-): SyncJobRecord {
+function withLiveProgress(job: SyncJobRecord, progress: SyncProgressEvent | null): SyncJobRecord {
   if (!progress || progress.jobId !== job.id) return job
   return {
     ...job,
@@ -103,19 +98,74 @@ function withLiveProgress(
   }
 }
 
+const EXTRA_PLATFORM_LABEL: Record<string, string> = {
+  dujiao: '独角数卡',
+  yiciyuan: '异次元发卡',
+  autopixel: 'AutoPixel'
+}
+
+/** 平台 id → 用户可读名称 */
+function platformLabel(platformId?: string | null): string {
+  if (!platformId) return ''
+  const profile = SHOP_PROFILES.find((p) => p.id === platformId)
+  if (profile) return profile.displayName
+  return EXTRA_PLATFORM_LABEL[platformId] ?? platformId
+}
+
+/** 店铺标题：平台名 + token，不展示原始 platform:token */
+function shopRefTitle(platformId?: string | null, token?: string | null): string {
+  const name = platformLabel(platformId)
+  const t = (token || '').trim()
+  if (name && t) return `${name} · ${t}`
+  if (t) return t
+  if (name) return name
+  return '未知店铺'
+}
+
+function shopErrorTitle(e: JobErrorEntry): string {
+  return shopRefTitle(e.platformId, e.token)
+}
+
+interface LiveShopEvent {
+  id: string
+  kind: 'ok' | 'fail' | 'skip' | 'working'
+  title: string
+  detail?: string
+  at: number
+}
+
 function JobDetailDialog({
   job,
   busy,
   onClose,
-  onRetry
+  onRetry,
+  onCancel
 }: {
   job: SyncJobRecord
   busy: boolean
   onClose: () => void
   onRetry: (errors: JobErrorEntry[]) => void
+  onCancel: (jobId: string) => void
 }): React.JSX.Element {
-  const dialogRef = useRef<HTMLDialogElement>(null)
-  const closedRef = useRef(false)
+  return (
+    <ModalDialog openKey={job.id} onClose={onClose}>
+      <JobDetailBody job={job} busy={busy} onRetry={onRetry} onCancel={onCancel} />
+    </ModalDialog>
+  )
+}
+
+function JobDetailBody({
+  job,
+  busy,
+  onRetry,
+  onCancel
+}: {
+  job: SyncJobRecord
+  busy: boolean
+  onRetry: (errors: JobErrorEntry[]) => void
+  onCancel: (jobId: string) => void
+}): React.JSX.Element {
+  const dismiss = useModalDismiss()
   const errors = jobErrors(job.meta)
   const failure = jobFailure(job.meta)
   const ok = metaNumber(job.meta, 'ok')
@@ -123,177 +173,421 @@ function JobDetailDialog({
   const skippedFresh = metaNumber(job.meta, 'skippedFresh')
   const skippedDisabled = metaNumber(job.meta, 'skippedDisabled')
   const hint = errorHint(job.errorCode ?? failure?.code)
-  const failureDetails = formatDetails(failure?.details)
   const canRetry = errors.some((e) => e.merchantId)
+  const summary = formatJobUserMessage(job)
+  const active = job.status === 'running' || job.status === 'pending'
+  const eta = active ? formatEta(job) : null
+  const hasMetaCounts =
+    ok != null ||
+    failed != null ||
+    (skippedFresh != null && skippedFresh > 0) ||
+    (skippedDisabled != null && skippedDisabled > 0)
+  const showProgress = active || job.total > 0
+  const shopProgress = parseShopProgressMessage(job.message)
 
-  function dismiss(): void {
-    if (closedRef.current) return
-    closedRef.current = true
-    const el = dialogRef.current
-    if (el?.open) el.close()
-    onClose()
-  }
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  const [requestLogs, setRequestLogs] = useState<SyncHttpRequestEntry[]>([])
+  const [liveEvents, setLiveEvents] = useState<LiveShopEvent[]>([])
 
-  useLayoutEffect(() => {
-    const el = dialogRef.current
-    if (!el) return
-    closedRef.current = false
-    try {
-      if (!el.open) el.showModal()
-    } catch {
-      el.setAttribute('open', '')
+  useEffect(() => {
+    if (!active) return
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [active])
+
+  // 订阅本任务的网络请求 → 只用于「还在联网」的用户可读提示
+  useEffect(() => {
+    let cancelled = false
+    void window.api.sync.listRequestLogs().then((rows) => {
+      if (!cancelled) setRequestLogs(rows.filter((e) => e.jobId === job.id))
+    })
+    const off = window.api.sync.onRequestLog((e) => {
+      if (e.jobId !== job.id) return
+      setRequestLogs((prev) => {
+        const i = prev.findIndex((x) => x.id === e.id)
+        if (i >= 0) {
+          const next = prev.slice()
+          next[i] = e
+          return next
+        }
+        return [e, ...prev].slice(0, 120)
+      })
+    })
+    return () => {
+      cancelled = true
+      off()
     }
   }, [job.id])
 
-  return createPortal(
-    <dialog
-      ref={dialogRef}
-      className="dialog dialog-wide"
-      onClose={() => {
-        if (closedRef.current) return
-        closedRef.current = true
-        onClose()
-      }}
-      onCancel={(e) => {
-        e.preventDefault()
-        dismiss()
-      }}
-    >
+  // 进度 message 变化 → 滚动动态（完成/失败/跳过）
+  useEffect(() => {
+    const parsed = parseShopProgressMessage(job.message)
+    if (!parsed) return
+    if (parsed.kind === 'scraping' || parsed.kind === 'in_shop') return
+
+    const id = `${parsed.kind}:${parsed.platformId}:${parsed.token}:${parsed.index}`
+    const kind: LiveShopEvent['kind'] =
+      parsed.kind === 'ok' ? 'ok' : parsed.kind === 'fail' ? 'fail' : 'skip'
+    const detail = kind === 'ok' ? '同步成功' : kind === 'fail' ? '同步失败' : '已跳过'
+    setLiveEvents((prev) => {
+      if (prev.some((e) => e.id === id)) return prev
+      return [
+        {
+          id,
+          kind,
+          title: shopRefTitle(parsed.platformId, parsed.token),
+          detail,
+          at: Date.now()
+        },
+        ...prev
+      ].slice(0, 40)
+    })
+  }, [job.message])
+
+  const elapsed = active ? formatElapsed(job.startedAt, nowTick) : null
+  const endElapsed =
+    !active && job.startedAt && job.finishedAt
+      ? formatElapsed(job.startedAt, new Date(job.finishedAt).getTime())
+      : null
+
+  const phase = phaseLabel(job.phase)
+  const statusText = STATUS_LABEL[job.status] ?? job.status
+
+  // 当前正在处理的店（标题下大字）
+  const currentShop =
+    active && shopProgress && (shopProgress.kind === 'scraping' || shopProgress.kind === 'in_shop')
+      ? shopRefTitle(shopProgress.platformId, shopProgress.token)
+      : null
+  const currentSub =
+    active &&
+    shopProgress?.kind === 'in_shop' &&
+    shopProgress.subTotal != null &&
+    shopProgress.subTotal > 0
+      ? `店内 ${shopProgress.subCurrent}/${shopProgress.subTotal}`
+      : null
+
+  const headline = currentShop
+    ? null
+    : summary || (active && phase ? phase : '') || (active ? '同步进行中' : '')
+
+  const whenLine = active
+    ? [
+        elapsed ? `已用 ${elapsed}` : null,
+        eta,
+        job.startedAt ? `开始于 ${timeAgo(job.startedAt)}` : null
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : [
+        endElapsed ? `耗时 ${endElapsed}` : null,
+        job.finishedAt
+          ? `完成于 ${timeAgo(job.finishedAt)}`
+          : job.startedAt
+            ? `开始于 ${timeAgo(job.startedAt)}`
+            : null
+      ]
+        .filter(Boolean)
+        .join(' · ')
+
+  // 运行中用动态事件统计；结束后用 meta
+  const liveOk = liveEvents.filter((e) => e.kind === 'ok').length
+  const liveFail = liveEvents.filter((e) => e.kind === 'fail').length
+  const liveSkip = liveEvents.filter((e) => e.kind === 'skip').length
+  const showLiveStats = active && (liveOk > 0 || liveFail > 0 || liveSkip > 0 || job.total > 0)
+
+  const pendingRequests = useMemo(
+    () => requestLogs.filter((e) => e.phase === 'pending'),
+    [requestLogs]
+  )
+  const recentRequests = useMemo(
+    () => requestLogs.filter((e) => e.phase !== 'pending').slice(0, 8),
+    [requestLogs]
+  )
+  const showNetwork = active && (pendingRequests.length > 0 || requestLogs.length > 0)
+
+  // 网络行：按 host 聚合进行中的
+  const pendingByHost = useMemo(() => {
+    const map = new Map<string, { host: string; startedAt: number; count: number }>()
+    for (const e of pendingRequests) {
+      const key = e.host || '未知站点'
+      const cur = map.get(key)
+      if (!cur) map.set(key, { host: key, startedAt: e.startedAt, count: 1 })
+      else {
+        cur.count += 1
+        cur.startedAt = Math.min(cur.startedAt, e.startedAt)
+      }
+    }
+    return [...map.values()].sort((a, b) => a.startedAt - b.startedAt)
+  }, [pendingRequests])
+
+  return (
+    <>
+      <div className="dialog-head">
+        <ModalDialogTitle className="dialog-title">{jobTypeLabel(job.jobType)}</ModalDialogTitle>
+        <IconButton label="关闭" autoFocus onClick={() => dismiss()}>
+          <Icon name="close" />
+        </IconButton>
+      </div>
       <div className="dialog-body">
-        <div className="dialog-head">
-          <h2 className="dialog-title">{jobTypeLabel(job.jobType)} · 任务详情</h2>
-          <IconButton label="关闭" autoFocus onClick={() => dismiss()}>
-            <Icon name="close" />
-          </IconButton>
-        </div>
-        <div className="job-detail-grid">
-          <span className="lab">状态</span>
-          <span>
-            <StatusDot tone={statusTone(job.status)}>
-              {STATUS_LABEL[job.status] ?? job.status}
-            </StatusDot>
-          </span>
-          <span className="lab">进度</span>
-          <span>
-            <div className="mono">
-              {job.current}/{job.total}
-              {job.phase ? ` · ${phaseLabel(job.phase)}` : ''}
-            </div>
-            {job.status === 'running' || job.status === 'pending' ? (
-              <div style={{ marginTop: 8, maxWidth: 280 }}>
-                <Progress
-                  current={job.current}
-                  total={job.total}
-                  indeterminate={!job.total}
-                />
-                <div className="small muted" style={{ marginTop: 6 }}>
-                  {formatSyncProgress(job)}
-                </div>
-              </div>
+        <div className="job-detail-meter">
+          <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <StatusDot tone={statusTone(job.status)}>{statusText}</StatusDot>
+            {showProgress && job.total > 0 ? (
+              <span className="job-detail-count">
+                <span className="num">{job.current}</span>
+                <span className="muted"> / </span>
+                <span className="num">{job.total}</span>
+                <span className="muted"> 家</span>
+              </span>
             ) : null}
-          </span>
-          <span className="lab">开始</span>
-          <span className="mono small">{formatAbs(job.startedAt)}</span>
-          <span className="lab">结束</span>
-          <span className="mono small">{formatAbs(job.finishedAt)}</span>
-          <span className="lab">任务 ID</span>
-          <span className="mono small">{job.id}</span>
+          </div>
+
+          {showProgress ? (
+            <div className="job-detail-meter-bar">
+              <Progress
+                current={job.current}
+                total={job.total}
+                indeterminate={active && !job.total}
+              />
+            </div>
+          ) : null}
+
+          {currentShop ? (
+            <div className="job-detail-current">
+              <div className="job-detail-current-label muted small">正在同步</div>
+              <div className="job-detail-current-title">{currentShop}</div>
+              {currentSub ? (
+                <div className="job-detail-current-sub muted small">{currentSub}</div>
+              ) : phase ? (
+                <div className="job-detail-current-sub muted small">{phase}</div>
+              ) : null}
+            </div>
+          ) : headline ? (
+            <div className="job-detail-headline">{headline}</div>
+          ) : null}
+
+          {whenLine ? <div className="job-detail-when muted small">{whenLine}</div> : null}
         </div>
 
-        {job.message ? (
+        {showLiveStats ? (
           <div className="job-detail-block">
-            <div className="lab">摘要</div>
-            <div className="job-detail-msg">{job.message}</div>
+            <div className="lab">目前为止</div>
+            <div className="job-detail-stats">
+              <span className="job-stat">
+                已处理 <span className="num">{job.current}</span>
+                {job.total > 0 ? (
+                  <>
+                    <span className="muted"> / </span>
+                    <span className="num">{job.total}</span>
+                  </>
+                ) : null}{' '}
+                家
+              </span>
+              {liveOk > 0 ? (
+                <span className="job-stat is-ok">
+                  成功 <span className="num">{liveOk}</span>
+                </span>
+              ) : null}
+              {liveFail > 0 ? (
+                <span className="job-stat is-fail">
+                  失败 <span className="num">{liveFail}</span>
+                </span>
+              ) : null}
+              {liveSkip > 0 ? (
+                <span className="job-stat">
+                  跳过 <span className="num">{liveSkip}</span>
+                </span>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
-        {(ok != null || failed != null || skippedFresh != null || skippedDisabled != null) && (
+        {hasMetaCounts && !active ? (
           <div className="job-detail-block">
-            <div className="lab">统计</div>
-            <div className="small">
-              {[
-                ok != null ? `成功 ${ok}` : null,
-                failed != null ? `失败 ${failed}` : null,
-                skippedFresh != null && skippedFresh > 0 ? `跳过新鲜 ${skippedFresh}` : null,
-                skippedDisabled != null && skippedDisabled > 0
-                  ? `跳过未启用平台 ${skippedDisabled}`
-                  : null
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            </div>
-          </div>
-        )}
-
-        {(job.errorCode || failure) && (
-          <div className="job-detail-block">
-            <div className="lab">任务级错误</div>
-            <div className="job-err-card">
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                {job.errorCode || failure?.code ? (
-                  <span className="mono small">{job.errorCode || failure?.code}</span>
-                ) : null}
-                {hint ? <span className="small muted">{hint}</span> : null}
-              </div>
-              {failure?.message && failure.message !== job.message ? (
-                <div className="job-detail-msg">{failure.message}</div>
+            <div className="lab">结果</div>
+            <div className="job-detail-stats">
+              {ok != null ? (
+                <span className="job-stat is-ok">
+                  成功 <span className="num">{ok}</span> 家
+                </span>
               ) : null}
-              {failureDetails ? <pre className="job-err-pre">{failureDetails}</pre> : null}
+              {failed != null && failed > 0 ? (
+                <span className="job-stat is-fail">
+                  失败 <span className="num">{failed}</span> 家
+                </span>
+              ) : null}
+              {skippedFresh != null && skippedFresh > 0 ? (
+                <span className="job-stat">
+                  已是最新 <span className="num">{skippedFresh}</span> 家（跳过）
+                </span>
+              ) : null}
+              {skippedDisabled != null && skippedDisabled > 0 ? (
+                <span className="job-stat">
+                  平台未启用 <span className="num">{skippedDisabled}</span> 家（跳过）
+                </span>
+              ) : null}
             </div>
           </div>
-        )}
+        ) : null}
+
+        {active ? (
+          <div className="job-detail-block">
+            <div className="lab">实时动态</div>
+            {currentShop || liveEvents.length > 0 ? (
+              <ul className="job-live-list">
+                {currentShop ? (
+                  <li className="job-live-item is-working">
+                    <span className="job-live-mark" aria-hidden>
+                      …
+                    </span>
+                    <div className="job-live-body">
+                      <div className="job-live-title">{currentShop}</div>
+                      <div className="job-live-detail muted small">{currentSub ?? '同步中'}</div>
+                    </div>
+                  </li>
+                ) : null}
+                {liveEvents.map((e) => (
+                  <li
+                    key={e.id}
+                    className={
+                      e.kind === 'ok'
+                        ? 'job-live-item is-ok'
+                        : e.kind === 'fail'
+                          ? 'job-live-item is-fail'
+                          : 'job-live-item is-skip'
+                    }
+                  >
+                    <span className="job-live-mark" aria-hidden>
+                      {e.kind === 'ok' ? '✓' : e.kind === 'fail' ? '✗' : '–'}
+                    </span>
+                    <div className="job-live-body">
+                      <div className="job-live-title">{e.title}</div>
+                      <div className="job-live-detail muted small">
+                        {e.detail}
+                        {e.at ? ` · ${timeAgo(new Date(e.at).toISOString())}` : ''}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="job-live-empty muted small">
+                {phase ? `${phase}…` : '正在启动，马上会有进度'}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {showNetwork ? (
+          <div className="job-detail-block">
+            <div className="lab">
+              网络
+              <span className="muted" style={{ fontWeight: 400 }}>
+                {pendingRequests.length > 0
+                  ? ` · 正在访问 ${pendingRequests.length} 处`
+                  : ` · 本任务已请求 ${requestLogs.length} 次`}
+              </span>
+            </div>
+            {pendingByHost.length > 0 ? (
+              <ul className="job-net-list">
+                {pendingByHost.map((h) => (
+                  <li key={h.host} className="job-net-item is-pending">
+                    <span className="job-net-host">{h.host}</span>
+                    <span className="job-net-meta muted small">
+                      连接中 · {formatDurationMs(nowTick - h.startedAt)}
+                      {h.count > 1 ? ` · ${h.count} 个请求` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="muted small" style={{ marginTop: 6 }}>
+                短暂空闲，等待下一家店…
+              </div>
+            )}
+            {recentRequests.length > 0 && pendingByHost.length === 0 ? (
+              <ul className="job-net-list job-net-list-recent">
+                {recentRequests.slice(0, 4).map((e) => (
+                  <li
+                    key={e.id}
+                    className={e.phase === 'error' ? 'job-net-item is-fail' : 'job-net-item'}
+                  >
+                    <span className="job-net-host">{e.host || '未知站点'}</span>
+                    <span className="job-net-meta muted small">
+                      {e.phase === 'error' ? '失败' : '完成'}
+                      {' · '}
+                      {formatDurationMs(
+                        typeof e.durationMs === 'number'
+                          ? e.durationMs
+                          : e.endedAt
+                            ? e.endedAt - e.startedAt
+                            : 0
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+
+        {hint ? (
+          <div className="job-detail-block">
+            <div className="lab">{job.status === 'cancelled' ? '说明' : '原因'}</div>
+            <div className="job-detail-msg">{hint}</div>
+          </div>
+        ) : null}
 
         {errors.length > 0 ? (
           <div className="job-detail-block">
-            <div className="lab">店铺失败明细（{errors.length}）</div>
+            <div className="lab">
+              {canRetry ? '这些店没同步成功' : '失败明细'}
+              <span className="muted" style={{ fontWeight: 400 }}>
+                {' '}
+                · {errors.length} 家
+              </span>
+            </div>
             <ul className="job-err-list">
               {errors.map((e, i) => {
-                const d = formatDetails(e.details)
-                const ref = e.platformId ? `${e.platformId}:${e.token}` : e.token
+                const reason = errorHint(e.code) ?? '出错了，请稍后重试'
                 return (
-                  <li key={`${ref}-${i}`} className="job-err-card">
-                    <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
-                      <span className="mono">{ref}</span>
-                      {e.code ? <span className="mono small muted">{e.code}</span> : null}
-                      {e.merchantId ? (
-                        <span className="mono small muted">{e.merchantId}</span>
-                      ) : null}
-                    </div>
-                    <div className="job-detail-msg">{e.message}</div>
-                    {e.code ? (
-                      <div className="small muted">{errorHint(e.code) ?? ''}</div>
-                    ) : null}
-                    {d ? <pre className="job-err-pre">{d}</pre> : null}
+                  <li key={`${e.platformId ?? ''}-${e.token}-${i}`} className="job-err-card">
+                    <div className="job-err-title">{shopErrorTitle(e)}</div>
+                    <div className="job-detail-msg">{reason}</div>
                   </li>
                 )
               })}
             </ul>
           </div>
         ) : null}
-
-        {job.meta && Object.keys(job.meta).length > 0 ? (
-          <details className="job-detail-raw">
-            <summary>原始 meta</summary>
-            <pre className="job-err-pre">{formatDetails(job.meta)}</pre>
-          </details>
-        ) : null}
       </div>
-      {canRetry ? (
+      {active || canRetry ? (
         <div className="dialog-actions">
-          <Button
-            variant="primary"
-            disabled={busy}
-            onClick={() => {
-              onRetry(errors)
-              dismiss()
-            }}
-          >
-            重试失败的店
-          </Button>
+          {active ? (
+            <Button
+              disabled={busy}
+              onClick={() => {
+                onCancel(job.id)
+              }}
+            >
+              取消同步
+            </Button>
+          ) : null}
+          {canRetry ? (
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() => {
+                onRetry(errors)
+                dismiss()
+              }}
+            >
+              重试失败的店
+            </Button>
+          ) : null}
         </div>
       ) : null}
-    </dialog>,
-    document.body
+    </>
   )
 }
 
@@ -302,14 +596,14 @@ export function SyncCenterPage(): React.JSX.Element {
     status,
     progress,
     start,
-    startMerchants,
     startShopAll,
     startShopSelected,
     cancelRunning,
     refresh,
     busy,
-    error
-  } = useSyncStatus()
+    anyRunning
+  } =
+    useSyncStatus()
   const confirm = useConfirm()
   const toast = useToast()
   const [shopUrlInput, setShopUrlInput] = useState('')
@@ -355,6 +649,17 @@ export function SyncCenterPage(): React.JSX.Element {
       toast(`已开始重试 ${ids.length} 家失败的店`)
     } else {
       toast('失败项没有关联商家 ID，无法批量重试', 'fail')
+    }
+  }
+
+  async function cancelJob(jobId: string): Promise<void> {
+    try {
+      await window.api.sync.cancel(jobId)
+      await refresh()
+      await loadHistory()
+      toast('已取消任务')
+    } catch (err) {
+      toast(formatUserError(err), 'fail')
     }
   }
 
@@ -420,40 +725,56 @@ export function SyncCenterPage(): React.JSX.Element {
     string
   ][]
 
-  // 与商家页一致：优先 IPC 实时 progress
-  const runningJob = progress ?? status?.running[0] ?? null
-  const liveDetailJob = detailJob ? withLiveProgress(detailJob, progress) : null
+  // 优先前台任务进度；后台自动刷新并行时不抢条
+  const foregroundRunning = (status?.running ?? []).filter((j) => j.meta?.background !== true)
+  const runningJob =
+    (progress &&
+    (progress.status === 'running' || progress.status === 'pending') &&
+    progress.background !== true
+      ? progress
+      : null) ??
+    foregroundRunning[0] ??
+    (progress?.status === 'running' || progress?.status === 'pending' ? progress : null) ??
+    status?.running[0] ??
+    null
+  const liveDetailJob = useMemo(() => {
+    if (!detailJob) return null
+    const fromHistory = historyRows.find((j) => j.id === detailJob.id)
+    const fromRunning = status?.running.find((j) => j.id === detailJob.id)
+    // 只把匹配 jobId 的 progress 合入，避免后台任务事件改写前台详情
+    const live =
+      progress && progress.jobId === detailJob.id
+        ? progress
+        : progress && progress.jobId === (fromHistory ?? fromRunning)?.id
+          ? progress
+          : null
+    return withLiveProgress(fromHistory ?? fromRunning ?? detailJob, live)
+  }, [detailJob, historyRows, status?.running, progress])
 
   return (
     <div className="stack">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">同步</h1>
-          <div className="page-meta">商家来自 PriceAI · 价格来自发卡网深刮 · 全部手动发起</div>
-        </div>
-        <div className="page-actions">
-          {busy ? <Button onClick={() => void cancelRunning()}>取消</Button> : null}
-          <Button disabled={busy} onClick={() => void startMerchants()}>
-            同步商家列表
-          </Button>
-          <Button
-            variant="primary"
-            disabled={busy || scrapableMerchants === 0}
-            onClick={() => void syncShops()}
-          >
-            增量同步店铺
-          </Button>
-          <Button disabled={busy || scrapableMerchants === 0} onClick={() => void syncShops(true)}>
-            强制全量
-          </Button>
-        </div>
-      </div>
-
-      {error ? (
-        <div className="panel" style={{ padding: '10px 14px' }}>
-          <StatusDot tone="fail">{error}</StatusDot>
-        </div>
-      ) : null}
+      <PageHeader
+        title="同步"
+        meta="商家列表：PriceAI / NodeBits · 商品与平台识别：全局深刮 · 全部手动发起"
+        actions={
+          <>
+            {busy ? <Button onClick={() => void cancelRunning()}>取消</Button> : null}
+            <Button
+              variant="primary"
+              disabled={busy || scrapableMerchants === 0}
+              onClick={() => void syncShops()}
+            >
+              增量同步店铺
+            </Button>
+            <Button
+              disabled={busy || scrapableMerchants === 0}
+              onClick={() => void syncShops(true)}
+            >
+              强制全量
+            </Button>
+          </>
+        }
+      />
 
       <div className="panel" style={{ padding: '14px 16px' }}>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -492,12 +813,17 @@ export function SyncCenterPage(): React.JSX.Element {
         ) : (
           <div className="stat-sub">尚未有成功的同步任务</div>
         )}
-        {busy && runningJob ? (
+        {anyRunning && runningJob ? (
           <div className="stack" style={{ gap: 6, marginTop: 12 }}>
             <div className="row between" style={{ gap: 8, flexWrap: 'wrap' }}>
-              <StatusDot tone="warn">同步中</StatusDot>
+              <StatusDot tone="warn">
+                {busy ? '同步中' : '后台刷新'}
+                {(status?.running.length ?? 0) > 1
+                  ? ` · ${status!.running.length} 个任务并行`
+                  : ''}
+              </StatusDot>
               <span className="small muted mono">
-                {(runningJob.current ?? 0)}/{(runningJob.total ?? 0)}
+                {runningJob.current ?? 0}/{runningJob.total ?? 0}
                 {runningJob.phase ? ` · ${phaseLabel(runningJob.phase)}` : ''}
               </span>
             </div>
@@ -512,7 +838,13 @@ export function SyncCenterPage(): React.JSX.Element {
       </div>
 
       <div className="panel">
-        <div className="panel-head">
+        <PanelHeader
+          actions={
+            <Button disabled={!canClear} onClick={() => void clearHistory()}>
+              清空历史
+            </Button>
+          }
+        >
           <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <strong>任务历史</strong>
             <span className="sub">
@@ -532,10 +864,7 @@ export function SyncCenterPage(): React.JSX.Element {
               ]}
             />
           </div>
-          <Button disabled={!canClear} onClick={() => void clearHistory()}>
-            清空历史
-          </Button>
-        </div>
+        </PanelHeader>
         {!historyRows.length && !historyLoading ? (
           <Empty title={statusFilter === 'all' ? '还没有同步任务' : '没有符合筛选的任务'}>
             {statusFilter === 'all'
@@ -584,9 +913,7 @@ export function SyncCenterPage(): React.JSX.Element {
                       </td>
                       <td className="num mono">
                         {j.current}/{j.total}
-                        {j.phase ? (
-                          <div className="small muted">{phaseLabel(j.phase)}</div>
-                        ) : null}
+                        {j.phase ? <div className="small muted">{phaseLabel(j.phase)}</div> : null}
                         {active ? (
                           <div style={{ marginTop: 6, minWidth: 80 }}>
                             <Progress
@@ -599,18 +926,13 @@ export function SyncCenterPage(): React.JSX.Element {
                       </td>
                       <td>
                         <div className="ellipsis" style={{ maxWidth: 360 }}>
-                          {active ? formatSyncProgress(j) : j.message}
+                          {active ? formatSyncProgress(j) : formatJobUserMessage(j)}
                         </div>
-                        {j.errorCode ? (
-                          <div className="small muted">{errorHint(j.errorCode)}</div>
-                        ) : null}
                         {errors.length ? (
                           <div className="small muted">{errors.length} 家店失败 · 点开看明细</div>
                         ) : null}
                       </td>
-                      <td className="small muted nowrap">
-                        {timeAgo(j.finishedAt || j.startedAt)}
-                      </td>
+                      <td className="small muted nowrap">{timeAgo(j.finishedAt || j.startedAt)}</td>
                       <td className="col-actions" onClick={(e) => e.stopPropagation()}>
                         {finished ? (
                           <IconButton
@@ -618,7 +940,7 @@ export function SyncCenterPage(): React.JSX.Element {
                             className="row-actions"
                             onClick={() => void deleteJob(j.id)}
                           >
-                            <Icon name="close" size={13} />
+                            <Icon name="close" size={14} />
                           </IconButton>
                         ) : null}
                       </td>
@@ -649,6 +971,7 @@ export function SyncCenterPage(): React.JSX.Element {
           busy={busy}
           onClose={() => setDetailJob(null)}
           onRetry={retryFailed}
+          onCancel={(jobId) => void cancelJob(jobId)}
         />
       ) : null}
     </div>

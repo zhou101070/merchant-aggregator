@@ -209,4 +209,137 @@ describe('fetchAllMerchants pagination', () => {
     expect(result.droppedNoLink).toBe(1)
     expect(result.total).toBe(2)
   })
+
+  it('resolves item-only entry_url via goodsInfo hook, drops on miss', async () => {
+    const itemOk = {
+      ...merchant('item-ok'),
+      shopUrl: null as string | null,
+      entryUrl: 'https://pay.ldxp.cn/item/5ozbbc'
+    }
+    const itemFail = {
+      ...merchant('item-fail'),
+      shopUrl: null as string | null,
+      entryUrl: 'https://pay.ldxp.cn/item/dead'
+    }
+    const client = mockClient(() =>
+      page({
+        rows: [itemOk, itemFail],
+        total: 2,
+        limited: false,
+        limit: 100,
+        offset: 0
+      })
+    )
+    const resolveItem = vi.fn(async (url: string) => {
+      if (url.includes('5ozbbc')) {
+        return {
+          shopUrl: 'https://pay.ldxp.cn/shop/PAXOVOVJ',
+          token: 'PAXOVOVJ',
+          platformId: 'ldxp'
+        }
+      }
+      return null
+    })
+
+    const result = await fetchAllMerchants({
+      client,
+      limit: 100,
+      intervalMs: 0,
+      resolveItem
+    })
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]!.id).toBe('item-ok')
+    expect(result.rows[0]!.shop_token).toBe('PAXOVOVJ')
+    expect(result.resolvedFromItem).toBe(1)
+    expect(result.droppedItemUnresolved).toBe(1)
+    expect(result.droppedNoLink).toBe(1)
+  })
+
+  it('streams onMerchantsReady per page before the next page fetch', async () => {
+    const all = Array.from({ length: 5 }, (_, i) => merchant(`m${i}`))
+    let pageFetches = 0
+    const readyAfterFetch: number[] = []
+    const client = mockClient(({ offset, limit }) => {
+      pageFetches += 1
+      // After page 1 is returned, onMerchantsReady must have fired for prior pages only
+      // (this callback runs before flush of the current page).
+      const rows = all.slice(offset, offset + limit)
+      const next = offset + rows.length
+      return page({
+        rows,
+        total: all.length,
+        limited: next < all.length,
+        limit,
+        offset
+      })
+    })
+
+    const flushed: string[][] = []
+    const result = await fetchAllMerchants({
+      client,
+      limit: 2,
+      intervalMs: 0,
+      onMerchantsReady: (rows) => {
+        flushed.push(rows.map((r) => r.id))
+        readyAfterFetch.push(pageFetches)
+      }
+    })
+
+    expect(result.rows).toHaveLength(5)
+    // 3 pages (2+2+1); each page flushes once (all shop-home)
+    expect(flushed).toEqual([['m0', 'm1'], ['m2', 'm3'], ['m4']])
+    // Flush happens after each page fetch, before subsequent fetches complete the loop
+    expect(readyAfterFetch[0]).toBe(1)
+    expect(readyAfterFetch[1]).toBe(2)
+    expect(readyAfterFetch[2]).toBe(3)
+    // Cumulative ready equals final result
+    expect(flushed.flat()).toEqual(result.rows.map((r) => r.id))
+  })
+
+  it('flushes shop-home rows before item resolve on the same page', async () => {
+    const home = merchant('home')
+    const itemOnly = {
+      ...merchant('item'),
+      shopUrl: null as string | null,
+      entryUrl: 'https://pay.ldxp.cn/item/5ozbbc'
+    }
+    const client = mockClient(() =>
+      page({
+        rows: [home, itemOnly],
+        total: 2,
+        limited: false,
+        limit: 100,
+        offset: 0
+      })
+    )
+    const order: string[] = []
+    let resolveStarted = false
+    const resolveItem = vi.fn(async () => {
+      resolveStarted = true
+      return {
+        shopUrl: 'https://pay.ldxp.cn/shop/ITEMTOK1',
+        token: 'ITEMTOK1',
+        platformId: 'ldxp'
+      }
+    })
+
+    await fetchAllMerchants({
+      client,
+      limit: 100,
+      intervalMs: 0,
+      resolveItem,
+      onMerchantsReady: (rows) => {
+        for (const r of rows) {
+          order.push(r.id)
+          if (r.id === 'home') {
+            // shop-home must land before goodsInfo is even called
+            expect(resolveStarted).toBe(false)
+          }
+        }
+      }
+    })
+
+    expect(order).toEqual(['home', 'item'])
+    expect(resolveItem).toHaveBeenCalledTimes(1)
+  })
 })

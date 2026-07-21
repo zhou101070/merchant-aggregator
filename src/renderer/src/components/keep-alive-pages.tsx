@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
+import { onDataCleared } from '../lib/data-events'
 import { SearchPage } from '../pages/SearchPage'
 import { MerchantsPage } from '../pages/MerchantsPage'
 import { FavoritesPage } from '../pages/FavoritesPage'
@@ -28,10 +29,19 @@ export function KeepAlivePages(): React.JSX.Element {
   const { pathname } = useLocation()
   const active = pageKey(pathname)
   const [seen, setSeen] = useState<Set<string>>(() => new Set(active ? [active] : ['/']))
+  /** Bump after data wipe so keep-alive pages remount with empty state. */
+  const [dataEpoch, setDataEpoch] = useState(0)
 
   useEffect(() => {
     if (!active) return
     setSeen((prev) => (prev.has(active) ? prev : new Set(prev).add(active)))
+  }, [active])
+
+  useEffect(() => {
+    return onDataCleared(() => {
+      setDataEpoch((n) => n + 1)
+      setSeen(new Set(active ? [active] : ['/']))
+    })
   }, [active])
 
   // /search 与未知路径：hooks 之后再 redirect，避免 Rules of Hooks 崩溃
@@ -44,10 +54,10 @@ export function KeepAlivePages(): React.JSX.Element {
         const on = page.match(pathname)
         return (
           <div
-            key={page.key}
-            className="route-alive"
-            hidden={!on}
+            key={`${page.key}-e${dataEpoch}`}
+            className={`route-alive${on ? ' is-active' : ''}`}
             aria-hidden={!on}
+            inert={!on || undefined}
           >
             {page.element}
           </div>

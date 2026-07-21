@@ -3,7 +3,7 @@ import type { ShopSiteProfile } from './shop-types'
 /**
  * ★ Single source of truth for shop site profiles.
  * Host strings for scrape matching live ONLY here (not duplicated in main).
- * CDN hosts (qn.ldxp.cn) belong in open-external allowlist only.
+ * CDN hosts (qn.ldxp.cn) are shop asset hosts only.
  */
 
 export const LDXP_PROFILE: ShopSiteProfile = {
@@ -45,17 +45,20 @@ export const SHOP_PROFILES: readonly ShopSiteProfile[] = [LDXP_PROFILE, CATFK_PR
  */
 export const SHOP_PLATFORM_OTHER = 'other'
 
+/** Non-profile scrapable platform ids (host-as-token + path-token families). */
+export const EXTRA_SCRAPABLE_PLATFORM_IDS = ['dujiao', 'yiciyuan', 'autopixel'] as const
+
 export function knownShopPlatformIds(
   profiles: readonly ShopSiteProfile[] = SHOP_PROFILES
 ): string[] {
-  return profiles.map((p) => p.id)
+  return [...profiles.map((p) => p.id), ...EXTRA_SCRAPABLE_PLATFORM_IDS]
 }
 
-/** Hosts that may appear on scrapable shop / item pages (from profiles). */
-export function scrapableShopHosts(profiles: readonly ShopSiteProfile[] = SHOP_PROFILES): string[] {
-  const set = new Set<string>()
-  for (const p of profiles) {
-    for (const h of p.hosts) set.add(h.toLowerCase())
-  }
-  return [...set]
+export function enabledScrapablePlatformIds(
+  profiles: readonly ShopSiteProfile[] = SHOP_PROFILES
+): string[] {
+  return [
+    ...profiles.filter((p) => p.enabled).map((p) => p.id),
+    ...EXTRA_SCRAPABLE_PLATFORM_IDS
+  ]
 }

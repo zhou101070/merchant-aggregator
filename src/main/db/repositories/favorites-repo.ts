@@ -1,13 +1,35 @@
 import type Database from 'better-sqlite3'
-import type { Favorite, FavoriteTargetType, RecentView } from '@shared/types/favorites'
+import type {
+  Favorite,
+  FavoriteTargetType,
+  FavoriteUpdateRequest,
+  RecentView
+} from '@shared/types/favorites'
 
-export class FavoritesRepo {
-  constructor(private readonly db: Database.Database) {}
+type FavoriteRow = {
+  id: number
+  target_type: string
+  target_id: string
+  note: string | null
+  created_at: string
+  baseline_price: number | null
+  target_price: number | null
+  title_snapshot: string | null
+  price: number | null
+  currency: string | null
+  stock: number | null
+  source_url: string | null
+  fetched_at: string | null
+  product_source: string | null
+  shop_token: string | null
+  shop_merchant_id: string | null
+  merchant_shop_platform: string | null
+  merchant_shop_token: string | null
+  merchant_ldxp_token: string | null
+}
 
-  list(): Favorite[] {
-    const rows = this.db
-      .prepare(
-        `SELECT f.id, f.target_type, f.target_id, f.note, f.created_at,
+const FAVORITE_SELECT = `SELECT f.id, f.target_type, f.target_id, f.note, f.created_at,
+                f.baseline_price, f.target_price,
                 CASE
                   WHEN f.target_type = 'merchant' THEN m.name
                   WHEN f.target_type = 'shop_product' THEN s.title
@@ -23,79 +45,102 @@ export class FavoritesRepo {
          LEFT JOIN merchants m
            ON f.target_type = 'merchant' AND m.id = f.target_id
          LEFT JOIN shop_products s
-           ON f.target_type = 'shop_product' AND s.id = f.target_id
-         ORDER BY f.created_at DESC`
-      )
-      .all() as {
-      id: number
-      target_type: string
-      target_id: string
-      note: string | null
-      created_at: string
-      title_snapshot: string | null
-      price: number | null
-      currency: string | null
-      stock: number | null
-      source_url: string | null
-      fetched_at: string | null
-      product_source: string | null
-      shop_token: string | null
-      shop_merchant_id: string | null
-      merchant_shop_platform: string | null
-      merchant_shop_token: string | null
-      merchant_ldxp_token: string | null
-    }[]
-    return rows.map((r) => {
-      const isMerchant = r.target_type === 'merchant'
-      const platformId = isMerchant
-        ? r.merchant_shop_platform || (r.merchant_ldxp_token ? 'ldxp' : null)
-        : r.product_source
-      const shopToken = isMerchant ? r.merchant_shop_token || r.merchant_ldxp_token : r.shop_token
-      return {
-        id: r.id,
-        targetType: r.target_type as FavoriteTargetType,
-        targetId: r.target_id,
-        note: r.note,
-        createdAt: r.created_at,
-        titleSnapshot: r.title_snapshot ?? undefined,
-        price: r.price,
-        currency: r.currency,
-        stock: r.stock,
-        sourceUrl: r.source_url,
-        fetchedAt: r.fetched_at,
-        merchantId: isMerchant ? r.target_id : r.shop_merchant_id,
-        platformId,
-        shopToken,
-        ldxpToken: shopToken
-      }
-    })
+           ON f.target_type = 'shop_product' AND s.id = f.target_id`
+
+function mapFavoriteRow(r: FavoriteRow): Favorite {
+  const isMerchant = r.target_type === 'merchant'
+  const platformId = isMerchant
+    ? r.merchant_shop_platform || (r.merchant_ldxp_token ? 'ldxp' : null)
+    : r.product_source
+  const shopToken = isMerchant ? r.merchant_shop_token || r.merchant_ldxp_token : r.shop_token
+  return {
+    id: r.id,
+    targetType: r.target_type as FavoriteTargetType,
+    targetId: r.target_id,
+    note: r.note,
+    createdAt: r.created_at,
+    baselinePrice: r.baseline_price,
+    targetPrice: r.target_price,
+    titleSnapshot: r.title_snapshot ?? undefined,
+    price: r.price,
+    currency: r.currency,
+    stock: r.stock,
+    sourceUrl: r.source_url,
+    fetchedAt: r.fetched_at,
+    merchantId: isMerchant ? r.target_id : r.shop_merchant_id,
+    platformId,
+    shopToken,
+    ldxpToken: shopToken
+  }
+}
+
+export class FavoritesRepo {
+  constructor(private readonly db: Database.Database) {}
+
+  list(): Favorite[] {
+    const rows = this.db
+      .prepare(`${FAVORITE_SELECT} ORDER BY f.created_at DESC`)
+      .all() as FavoriteRow[]
+    return rows.map(mapFavoriteRow)
   }
 
-  add(req: { targetType: FavoriteTargetType; targetId: string; note?: string }): Favorite {
+  add(req: {
+    targetType: FavoriteTargetType
+    targetId: string
+    note?: string
+    targetPrice?: number | null
+  }): Favorite {
     const createdAt = new Date().toISOString()
+    let baseline: number | null = null
+    if (req.targetType === 'shop_product') {
+      const row = this.db
+        .prepare(`SELECT price FROM shop_products WHERE id = ?`)
+        .get(req.targetId) as { price: number | null } | undefined
+      baseline = row?.price ?? null
+    }
     this.db
       .prepare(
-        `INSERT INTO favorites (target_type, target_id, note, created_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(target_type, target_id) DO UPDATE SET note = excluded.note`
+        `INSERT INTO favorites (target_type, target_id, note, created_at, baseline_price, target_price)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(target_type, target_id) DO UPDATE SET
+           note = COALESCE(excluded.note, favorites.note),
+           baseline_price = COALESCE(favorites.baseline_price, excluded.baseline_price),
+           target_price = COALESCE(excluded.target_price, favorites.target_price)`
       )
-      .run(req.targetType, req.targetId, req.note ?? null, createdAt)
-    const row = this.db
-      .prepare(`SELECT * FROM favorites WHERE target_type = ? AND target_id = ?`)
-      .get(req.targetType, req.targetId) as {
-      id: number
-      target_type: string
-      target_id: string
-      note: string | null
-      created_at: string
+      .run(
+        req.targetType,
+        req.targetId,
+        req.note ?? null,
+        createdAt,
+        baseline,
+        req.targetPrice ?? null
+      )
+    return this.getOne(req.targetType, req.targetId)!
+  }
+
+  update(req: FavoriteUpdateRequest): Favorite | null {
+    const existing = this.db
+      .prepare(`SELECT id FROM favorites WHERE target_type = ? AND target_id = ?`)
+      .get(req.targetType, req.targetId) as { id: number } | undefined
+    if (!existing) return null
+
+    const sets: string[] = []
+    const params: unknown[] = []
+    if (req.note !== undefined) {
+      sets.push('note = ?')
+      params.push(req.note)
     }
-    return {
-      id: row.id,
-      targetType: row.target_type as FavoriteTargetType,
-      targetId: row.target_id,
-      note: row.note,
-      createdAt: row.created_at
+    if (req.targetPrice !== undefined) {
+      sets.push('target_price = ?')
+      params.push(req.targetPrice)
     }
+    if (sets.length) {
+      params.push(req.targetType, req.targetId)
+      this.db
+        .prepare(`UPDATE favorites SET ${sets.join(', ')} WHERE target_type = ? AND target_id = ?`)
+        .run(...params)
+    }
+    return this.getOne(req.targetType, req.targetId)
   }
 
   remove(req: { targetType: FavoriteTargetType; targetId: string }): { ok: boolean } {
@@ -103,6 +148,13 @@ export class FavoritesRepo {
       .prepare(`DELETE FROM favorites WHERE target_type = ? AND target_id = ?`)
       .run(req.targetType, req.targetId)
     return { ok: info.changes > 0 }
+  }
+
+  private getOne(targetType: FavoriteTargetType, targetId: string): Favorite | null {
+    const row = this.db
+      .prepare(`${FAVORITE_SELECT} WHERE f.target_type = ? AND f.target_id = ? LIMIT 1`)
+      .get(targetType, targetId) as FavoriteRow | undefined
+    return row ? mapFavoriteRow(row) : null
   }
 }
 

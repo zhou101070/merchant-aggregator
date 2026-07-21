@@ -1,0 +1,352 @@
+﻿/* panels.css — 面板、表格、空态、骨架 */
+
+/* ================= 面板 / 表格 ================= */
+
+.panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.table .col-actions {
+  width: 40px;
+  text-align: right;
+}
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+/* 通用页码分页器（黄铜主题 · 完整形态） */
+.pagination-meta {
+  min-width: 0;
+  flex: 1;
+}
+/* 贴在滚动列表外时作为底栏，始终可见 */
+.panel > .pagination {
+  flex-shrink: 0;
+  background: var(--bg-raised);
+}
+.pagination-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+  justify-content: flex-end;
+}
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.pagination-btn {
+  box-sizing: border-box;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg-raised);
+  color: var(--ink-2);
+  font-family: var(--font-data);
+  font-size: var(--text-s);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+.pagination-btn:hover:not(:disabled):not(.is-active) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+.pagination-btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+.pagination-btn.is-active {
+  background: var(--accent-wash);
+  border-color: color-mix(in oklch, var(--accent-text) 45%, transparent);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 25%, transparent);
+}
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pagination-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.pagination-ellipsis {
+  min-width: 22px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-4);
+  font-size: var(--text-s);
+  user-select: none;
+  letter-spacing: 0.05em;
+}
+.pagination-size {
+  min-width: 96px;
+}
+.pagination-size.select,
+.pagination .select {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: var(--text-s);
+}
+.pagination-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.pagination-jump-input {
+  box-sizing: border-box;
+  width: 44px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font-family: var(--font-data);
+  font-size: var(--text-s);
+  text-align: center;
+  outline: none;
+}
+.pagination-jump-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.pagination-jump-input:focus {
+  border-color: color-mix(in oklch, var(--accent-text) 55%, transparent);
+  box-shadow: 0 0 0 2px var(--accent-wash);
+}
+.pagination-jump-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.panel-head strong {
+  font-size: var(--text-m);
+  font-weight: 600;
+}
+.panel-head .sub {
+  font-size: var(--text-s);
+  color: var(--ink-2);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-m);
+}
+.table th {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--bg-raised);
+  box-shadow: inset 0 -1px var(--border);
+  text-align: left;
+  padding: 8px 12px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+.table tbody tr {
+  transition: background var(--dur-1) var(--ease-out);
+}
+.table tbody tr:hover {
+  background: var(--bg-hover);
+}
+.table tbody tr.selected {
+  background: var(--accent-wash);
+}
+.table .col-check {
+  width: 36px;
+}
+.table th.num,
+.table td.num {
+  text-align: right;
+}
+.table th.num .th-sort {
+  justify-content: flex-end;
+  width: 100%;
+}
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.th-sort:hover {
+  color: var(--ink);
+}
+.th-sort.on {
+  color: var(--ink);
+  font-weight: 600;
+}
+.th-sort-mark {
+  font-size: var(--text-xs);
+  opacity: 0.35;
+  font-weight: 500;
+  min-width: 1em;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.th-sort.on .th-sort-mark {
+  opacity: 0.9;
+  color: var(--accent-text);
+}
+.th-sort:not(.on):hover .th-sort-mark {
+  opacity: 0.55;
+}
+
+/* 行内动作：始终全不透明，避免像禁用 */
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+/* 表格底部状态条 */
+.list-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-s);
+  color: var(--ink-3);
+}
+.list-status .grow {
+  flex: 1;
+}
+
+/* 数据签名 */
+.num,
+.mono {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+.mono {
+  font-size: var(--text-s);
+}
+
+.price {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.price .cur {
+  font-size: var(--text-s);
+  color: var(--ink-2);
+  margin-right: 4px;
+}
+.price .amt {
+  font-size: var(--text-l);
+  font-weight: 500;
+}
+.price.lowest .amt {
+  color: var(--accent-text);
+}
+.low-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+.price-diff {
+  font-family: var(--font-data);
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+}
+
+mark.hl {
+  background: var(--accent-wash);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+/* 空态 / 骨架 */
+.empty {
+  padding: 48px 24px;
+  text-align: center;
+}
+.panel .empty {
+  padding: 28px 24px;
+}
+.empty h3 {
+  margin: 0 0 8px;
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+.empty p {
+  margin: 0 auto 16px;
+  max-width: 34em;
+  font-size: var(--text-m);
+  color: var(--ink-2);
+}
+.empty .empty-actions {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skel {
+  height: 12px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-hover);
+  animation: pulse 1.6s var(--ease-out) infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.45;
+  }
+}

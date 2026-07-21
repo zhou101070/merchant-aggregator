@@ -8,7 +8,7 @@
 
 ## 是什么
 
-个人向桌面比价聚合工具。从 PriceAI 同步商家主档，按需深刮 **shopApi 系发卡网**（当前 **ldxp**、**catfk**，profile 可扩展）店内商品，在 **本地 SQLite** 上完成跨店搜索、比价、收藏与跳转源站。搜索路径零网络请求；所有联网同步都由用户显式发起。
+个人向桌面比价聚合工具。从 **PriceAI / NodeBits** 同步商家主档（双列表源，入库后同一店铺一行），平台识别与店内商品深刮为 **全局策略**（与列表来源无关：`identifyShopPlatform` + registry，当前 **ldxp** / **catfk** / 独角 / 异次元等）。本地 **SQLite** 完成跨店搜索、比价、收藏与跳转源站。搜索路径零网络请求；所有联网同步都由用户显式发起。
 
 ## 用户与场景
 
@@ -30,4 +30,3 @@
 
 - 视觉与交互规范：[DESIGN.md](DESIGN.md)
 - 开发入口与命令：[README.md](../README.md)
-- 早期全量设计稿（部分过时）：[product-design.md](product-design.md)

@@ -46,5 +46,3 @@ export function createLogger(scope: string): Logger {
     child: (childScope) => createLogger(`${scope}:${childScope}`)
   }
 }
-
-export const rootLogger = createLogger('ma')

@@ -1,8 +1,7 @@
 import { AppError } from '@shared/types/errors'
-import { LDXP_LIMITS } from '@shared/constants'
+import { SHOP_API_LIMITS } from '@shared/constants'
 import type { ShopSiteProfile } from '@shared/platforms/shop-types'
-import { findProfileById, itemPageUrl } from '@shared/platforms/shop-types'
-import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
+import { itemPageUrl } from '@shared/platforms/shop-types'
 import { stripHtml } from '../../services/html-text'
 import { createLogger } from '../../utils/logger'
 import type { NormalizedShopProductRow } from '../../db/repositories/shop-products-repo'
@@ -16,7 +15,7 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function normalizeGoods(
+export function normalizeGoods(
   item: ShopApiGoodsItem,
   opts: {
     profile: ShopSiteProfile
@@ -29,6 +28,7 @@ function normalizeGoods(
 ): NormalizedShopProductRow | null {
   const key = item.goods_key
   if (!key) return null
+  const stock = num(item.extend?.stock_count)
   const source = opts.profile.sourceId
   const id = `${source}:${opts.token}:${key}`
   return {
@@ -46,7 +46,7 @@ function normalizeGoods(
     goods_type: item.goods_type || opts.goodsType,
     category_id: item.category?.id ?? null,
     category_name: item.category?.name ?? null,
-    stock: item.extend?.stock_count ?? null,
+    stock,
     image: item.image ?? null,
     description_text: stripHtml(item.description),
     description_html: null,
@@ -60,6 +60,8 @@ export async function scrapeShopApi(options: {
   token: string
   merchantId?: string | null
   minIntervalMs?: number
+  /** Concurrent goodsList pages; clamped to SHOP_API_LIMITS.pageConcurrency */
+  pageConcurrency?: number
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
 }): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
@@ -84,43 +86,103 @@ export async function scrapeShopApi(options: {
   const totalEstimate = Math.max(info.goods_count, 1)
   options.onProgress?.({ current: 0, total: totalEstimate, phase: 'info' })
 
+  const pageSize = SHOP_API_LIMITS.defaultPageSize
+  const concLim = SHOP_API_LIMITS.pageConcurrency
+  const concurrency = Math.min(
+    concLim.max,
+    Math.max(
+      concLim.min,
+      Math.floor(
+        typeof options.pageConcurrency === 'number' && Number.isFinite(options.pageConcurrency)
+          ? options.pageConcurrency
+          : concLim.default
+      )
+    )
+  )
+
   for (const goodsType of types) {
-    let page = 1
-    let emptyStreak = 0
+    let nextPage = 1
     while (true) {
       if (options.signal?.aborted) throw new AppError('CANCELLED', 'shop scrape cancelled')
-      const { list } = await client.goodsList({
-        token,
-        goodsType,
-        current: page,
-        pageSize: LDXP_LIMITS.defaultPageSize
-      })
-      if (!list.length) {
-        emptyStreak += 1
-        if (emptyStreak >= 1) break
-      } else {
-        emptyStreak = 0
+      if (nextPage > 200) {
+        throw new AppError(
+          'NETWORK',
+          `shop pagination exceeded page 200 for goods type ${goodsType}`,
+          {
+            platformId: options.profile.id,
+            token,
+            goodsType,
+            page: nextPage,
+            collected: rows.length,
+            goodsCount: info.goods_count
+          }
+        )
       }
-      const fetchedAt = new Date().toISOString()
-      for (const item of list) {
-        const row = normalizeGoods(item, {
-          profile: options.profile,
-          token,
-          merchantId: options.merchantId ?? null,
-          shopName: info.nickname,
-          goodsType,
-          fetchedAt
+
+      const batch: number[] = []
+      for (let i = 0; i < concurrency && nextPage + i <= 200; i++) {
+        batch.push(nextPage + i)
+      }
+
+      // allSettled: later pages may fail after we already hit a short/empty page
+      const settled = await Promise.allSettled(
+        batch.map(async (page) => {
+          const { list } = await client.goodsList({
+            token,
+            goodsType,
+            current: page,
+            pageSize
+          })
+          return { page, list }
         })
-        if (row) rows.push(row)
+      )
+
+      let stop = false
+      for (let i = 0; i < settled.length; i++) {
+        const page = batch[i]
+        const outcome = settled[i]
+        if (outcome.status === 'rejected') {
+          // Only fail if this page is still required (no earlier short/empty page)
+          const err = outcome.reason
+          if (err instanceof AppError) throw err
+          throw new AppError('NETWORK', err instanceof Error ? err.message : String(err), {
+            platformId: options.profile.id,
+            token,
+            goodsType,
+            page
+          })
+        }
+
+        const { list } = outcome.value
+        if (!list.length) {
+          stop = true
+          break
+        }
+        const fetchedAt = new Date().toISOString()
+        for (const item of list) {
+          const row = normalizeGoods(item, {
+            profile: options.profile,
+            token,
+            merchantId: options.merchantId ?? null,
+            shopName: info.nickname,
+            goodsType,
+            fetchedAt
+          })
+          if (row) rows.push(row)
+        }
+        options.onProgress?.({
+          current: Math.min(rows.length, totalEstimate),
+          total: totalEstimate,
+          phase: `goods:${goodsType}:p${page}`
+        })
+        if (list.length < pageSize) {
+          stop = true
+          break
+        }
       }
-      options.onProgress?.({
-        current: Math.min(rows.length, totalEstimate),
-        total: totalEstimate,
-        phase: `goods:${goodsType}:p${page}`
-      })
-      if (list.length < LDXP_LIMITS.defaultPageSize) break
-      page += 1
-      if (page > 200) break
+
+      if (stop) break
+      nextPage += batch.length
     }
   }
 
@@ -130,17 +192,4 @@ export async function scrapeShopApi(options: {
     count: rows.length
   })
   return { rows, shopName: info.nickname, goodsCount: info.goods_count }
-}
-
-/** Compat: scrape ldxp by token using registry profile. */
-export async function scrapeLdxpShop(options: {
-  token: string
-  merchantId?: string | null
-  minIntervalMs?: number
-  signal?: AbortSignal
-  onProgress?: (p: { current: number; total: number; phase: string }) => void
-}): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
-  const profile = findProfileById('ldxp', SHOP_PROFILES)
-  if (!profile) throw new AppError('INTERNAL', 'ldxp profile missing')
-  return scrapeShopApi({ ...options, profile })
 }

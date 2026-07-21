@@ -3,9 +3,10 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { ConfirmProvider } from './components/dialog'
 import { KeepAlivePages } from './components/keep-alive-pages'
 import { ToastProvider } from './components/toast'
+import { WindowControls } from './components/window-controls'
 import { Icon } from './components/icons'
 import { IconButton, Kbd, Progress } from './components/ui'
-import { useSyncStatus } from './hooks/useSync'
+import { isBackgroundSyncJob, useSyncStatus } from './hooks/useSync'
 import { formatSyncProgress, jobTypeLabel } from './lib/sync-labels'
 import { timeAgo } from './lib/format-time'
 import { focusSearchInput } from './lib/focus-search'
@@ -14,54 +15,81 @@ import './styles/app.css'
 
 function SyncWidget(): React.JSX.Element {
   const navigate = useNavigate()
-  const { status, progress, busy, cancelRunning } = useSyncStatus()
-  const job = progress?.status === 'running' ? progress : status?.running[0]
+  const { status, progress, busy, anyRunning, cancelRunning } = useSyncStatus()
+  const foregroundRunning = (status?.running ?? []).filter((j) => !isBackgroundSyncJob(j))
+  const backgroundRunning = (status?.running ?? []).filter((j) => isBackgroundSyncJob(j))
+  // 优先展示前台任务；仅有后台自动刷新时也显示进度（但不锁按钮）
+  const job =
+    progress?.status === 'running' && !isBackgroundSyncJob(progress)
+      ? progress
+      : foregroundRunning[0] ??
+        (progress?.status === 'running' ? progress : null) ??
+        backgroundRunning[0] ??
+        status?.running[0]
+  const showCancel = busy && foregroundRunning.length > 0
 
   const lastSync = Object.values(status?.lastSuccessAt ?? {})
     .filter(Boolean)
     .sort()
     .pop()
 
+  // Outer is a div (not button) so cancel IconButton is not nested interactive.
   return (
-    <button
-      type="button"
-      className="sync-widget"
-      onClick={() => navigate('/sync')}
-      title="打开同步中心"
-    >
-      {busy && job ? (
+    <div className="sync-widget">
+      {anyRunning && job ? (
         <>
           <span className="sync-title">
-            <span>{jobTypeLabel(job.jobType)}</span>
-            <IconButton
-              label="取消同步"
-              onClick={(e) => {
-                e.stopPropagation()
-                void cancelRunning()
-              }}
+            <button
+              type="button"
+              className="sync-widget-hit"
+              onClick={() => navigate('/sync')}
+              title="打开同步中心"
             >
-              <Icon name="close" size={13} />
-            </IconButton>
+              {jobTypeLabel(job.jobType)}
+              {isBackgroundSyncJob(job) ? ' · 后台' : ''}
+              {(status?.running.length ?? 0) > 1
+                ? ` · ${status!.running.length} 个任务`
+                : ''}
+            </button>
+            {showCancel ? (
+              <IconButton label="取消前台同步" onClick={() => void cancelRunning()}>
+                <Icon name="close" size={14} />
+              </IconButton>
+            ) : null}
           </span>
-          <Progress current={job.current ?? 0} total={job.total ?? 0} indeterminate={!job.total} />
-          <span className="sync-line">{formatSyncProgress(job)}</span>
+          <button
+            type="button"
+            className="sync-widget-hit"
+            onClick={() => navigate('/sync')}
+            title="打开同步中心"
+          >
+            <Progress current={job.current ?? 0} total={job.total ?? 0} indeterminate={!job.total} />
+            <span className="sync-line">{formatSyncProgress(job)}</span>
+          </button>
         </>
       ) : (
-        <>
+        <button
+          type="button"
+          className="sync-widget-hit"
+          onClick={() => navigate('/sync')}
+          title="打开同步中心"
+        >
           <span className="sync-counts">
             <span>商家</span>
             <span className="num">{status?.counts.merchants ?? 0}</span>
-            <span>ldxp</span>
-            <span className="num">{status?.counts.ldxpMerchants ?? 0}</span>
+            <span>可刮</span>
+            <span className="num">
+              {status?.counts.scrapableMerchants ?? status?.counts.ldxpMerchants ?? 0}
+            </span>
             <span>店内商品</span>
             <span className="num">{status?.counts.shopProducts ?? 0}</span>
           </span>
           <span className="sync-line">
             {lastSync ? `上次同步 ${timeAgo(lastSync)}` : '尚未同步'}
           </span>
-        </>
+        </button>
       )}
-    </button>
+    </div>
   )
 }
 
@@ -124,6 +152,7 @@ export default function App(): React.JSX.Element {
           </aside>
           <div className="main">
             <div className="drag-strip" aria-hidden="true" />
+            <WindowControls />
             <main className="content">
               <KeepAlivePages />
             </main>

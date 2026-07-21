@@ -28,6 +28,33 @@ export interface SyncProgressEvent {
   startedAt?: string
   /** Original job type before alias normalize (e.g. ldxp_all → shop_all) */
   requestedJobType?: SyncJobType
+  /**
+   * 后台自动刷新等：不占用前台互斥 lane，不把 UI「忙碌」锁死，
+   * 可与用户发起的任务并行。
+   */
+  background?: boolean
+}
+
+/** One outbound HTTP call during an active sync job (UI request stream). */
+export type SyncHttpRequestPhase = 'pending' | 'done' | 'error'
+
+export interface SyncHttpRequestEntry {
+  id: string
+  jobId: string | null
+  method: string
+  url: string
+  host: string
+  /** Epoch ms when the request started */
+  startedAt: number
+  /** Epoch ms when settled; absent while pending */
+  endedAt?: number
+  /** Final duration ms; UI may compute live from startedAt while pending */
+  durationMs?: number
+  status?: number | null
+  error?: string | null
+  /** Outbound path label for UI (currently always `直连`). */
+  node: string
+  phase: SyncHttpRequestPhase
 }
 
 export interface SyncJobRecord {
@@ -59,12 +86,7 @@ export interface SyncStatus {
 
 /** History list filter — `running` means pending+running */
 export type SyncHistoryStatusFilter =
-  | 'all'
-  | 'running'
-  | 'succeeded'
-  | 'partial'
-  | 'failed'
-  | 'cancelled'
+  'all' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled'
 
 export interface SyncJobListQuery {
   status?: SyncHistoryStatusFilter
@@ -90,6 +112,65 @@ export interface SyncStartRequest {
   /** for shop_selected / ldxp_selected */
   merchantIds?: string[]
   force?: boolean
+  /**
+   * 后台自动刷新：不打开系统浏览器过人机；失败后标 failing，不再被自动挑选，
+   * 直到用户主动同步成功。
+   */
+  background?: boolean
+}
+
+/** 商家池条目状态（双池同步） */
+export type MerchantPoolStatus =
+  | 'queued'
+  | 'discovering'
+  | 'awaiting_waf'
+  | 'discovered'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+
+/** 商品组池条目状态 */
+export type GroupPoolStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface MerchantPoolItem {
+  id: string
+  jobId: string
+  merchantId: string | null
+  platformId: string
+  token: string
+  status: MerchantPoolStatus
+  message?: string
+  groupCount?: number
+  startedAt?: number
+  endedAt?: number
+}
+
+export interface ProductGroupPoolItem {
+  id: string
+  jobId: string
+  merchantPoolItemId: string
+  merchantId: string | null
+  platformId: string
+  token: string
+  /** shopApi: goodsType；整店族: '*' */
+  groupKey: string
+  status: GroupPoolStatus
+  message?: string
+  productCount?: number
+  startedAt?: number
+  endedAt?: number
+}
+
+export interface JobPoolSnapshot {
+  jobId: string
+  merchants: MerchantPoolItem[]
+  groups: ProductGroupPoolItem[]
+  caps: {
+    discoverConcurrency: number
+    requestBudget: number
+    startConsumeAt: number
+    maxOpenStores: number
+  }
 }
 
 const JOB_ALIAS: Record<string, SyncJobType> = {
@@ -103,14 +184,42 @@ const JOB_ALIAS: Record<string, SyncJobType> = {
   bootstrap: 'bootstrap'
 }
 
-/** Normalize aliases → canonical before DB insert / lane assignment. */
-export function normalizeJobType(jobType: SyncJobType | string): SyncJobType {
-  return (JOB_ALIAS[jobType] ?? jobType) as SyncJobType
+/** Canonical job types after alias normalization (no legacy keys). */
+export const CANONICAL_JOB_TYPES = [
+  'merchants',
+  'bootstrap',
+  'shop_one',
+  'shop_selected',
+  'shop_all'
+] as const satisfies readonly SyncJobType[]
+
+/**
+ * Normalize aliases → canonical before DB insert / lane assignment.
+ * Returns null for unknown types so callers can reject before side effects.
+ */
+export function normalizeJobType(jobType: SyncJobType | string): SyncJobType | null {
+  const n = JOB_ALIAS[jobType]
+  return n ?? null
 }
 
 export function isShopJob(jobType: SyncJobType | string): boolean {
   const n = normalizeJobType(jobType)
   return n === 'shop_one' || n === 'shop_selected' || n === 'shop_all'
+}
+
+/**
+ * 同步中心「商品同步」：纯店刮任务，或 bootstrap 已进入刮店阶段。
+ * 商家列表 / 指纹探测不算商品同步。
+ */
+export function isProductSyncActivity(
+  jobType: SyncJobType | string,
+  phase?: string | null
+): boolean {
+  if (isShopJob(jobType)) return true
+  if (jobType !== 'bootstrap') return false
+  const p = (phase ?? '').trim()
+  if (!p || p === 'starting' || p === 'merchants' || p === 'fingerprint') return false
+  return true
 }
 
 /** Pairs of aliases that share lastSuccessAt. */

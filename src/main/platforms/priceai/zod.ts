@@ -40,7 +40,8 @@ export const priceaiMerchantsPageSchema = z.object({
   rows: z.array(priceaiMerchantRawSchema),
   total: z.number(),
   message: z.string().nullable().optional(),
-  degraded: z.boolean(),
+  // Live API may omit this field; treat missing as healthy.
+  degraded: z.boolean().optional().default(false),
   generatedAt: z.string().nullable().optional(),
   limited: z.boolean(),
   limit: z.number(),

@@ -1,9 +1,12 @@
 import type Database from 'better-sqlite3'
-import { likeContains, tokenizeQuery } from '@shared/lib/search-query'
 import {
-  knownShopPlatformIds,
-  SHOP_PLATFORM_OTHER
-} from '@shared/platforms/shop-profiles'
+  collapseMerchantBatch,
+  merchantIdentityKeys,
+  mergeNormalizedMerchantRows,
+  preferMerchantId
+} from '@shared/lib/merchant-identity'
+import { likeContains, tokenizeQuery } from '@shared/lib/search-query'
+import { knownShopPlatformIds, SHOP_PLATFORM_OTHER } from '@shared/platforms/shop-profiles'
 import type { Merchant, MerchantCandidates, MerchantListQuery } from '@shared/types/merchant'
 import type { NormalizedMerchantRow } from '../../platforms/priceai/normalize'
 
@@ -63,9 +66,16 @@ function freshCutoff(freshHours: number): string {
 /** Scrapable = shop_platform + shop_token present (PR2 forced). */
 const SCRAPABLE_SQL = `(shop_token IS NOT NULL AND shop_token != '' AND shop_platform IS NOT NULL AND shop_platform != '')`
 
+/** 屏蔽商家不进列表 / 候选 / 同步池（搜索另有独立过滤） */
+const NOT_BLOCKED_SQL = `NOT EXISTS (
+  SELECT 1 FROM blocked_targets b
+  WHERE b.target_type = 'merchant' AND b.target_id = merchants.id
+)`
+
 /** 新鲜 = 最近一次刮取成功且在新鲜期内 */
 const NEEDS_SYNC_SQL = `
   ${SCRAPABLE_SQL}
+  AND ${NOT_BLOCKED_SQL}
   AND NOT (COALESCE(app_health_status, '') = 'healthy' AND COALESCE(app_health_at, '') >= @cutoff)`
 
 /** Derive UI health from local scrape state (app-side). Requires shop_platform + shop_token. */
@@ -220,40 +230,105 @@ export class MerchantsRepo {
 
   setAppHealth(
     merchantId: string,
-    status: 'healthy' | 'failing' | 'retrying',
+    status: 'healthy' | 'failing' | 'retrying' | 'never',
     message?: string | null
   ): void {
+    if (status === 'healthy') {
+      this.db
+        .prepare(
+          `UPDATE merchants
+           SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+           WHERE id = ?`
+        )
+        .run(status, new Date().toISOString(), message ?? null, merchantId)
+      return
+    }
     this.db
       .prepare(
         `UPDATE merchants
-         SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+         SET app_health_status = ?, app_health_message = ?
          WHERE id = ?`
       )
-      .run(status, new Date().toISOString(), message ?? null, merchantId)
+      .run(status, message ?? null, merchantId)
   }
 
   setAppHealthByShopRef(
     platform: string,
     token: string,
-    status: 'healthy' | 'failing' | 'retrying',
+    status: 'healthy' | 'failing' | 'retrying' | 'never',
     message?: string | null
   ): void {
+    if (status === 'healthy') {
+      this.db
+        .prepare(
+          `UPDATE merchants
+           SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+           WHERE shop_platform = ? AND shop_token = ?`
+        )
+        .run(status, new Date().toISOString(), message ?? null, platform, token)
+      return
+    }
     this.db
       .prepare(
         `UPDATE merchants
-         SET app_health_status = ?, app_health_at = ?, app_health_message = ?
+         SET app_health_status = ?, app_health_message = ?
          WHERE shop_platform = ? AND shop_token = ?`
       )
-      .run(status, new Date().toISOString(), message ?? null, platform, token)
+      .run(status, message ?? null, platform, token)
   }
 
-  /** @deprecated use setAppHealthByShopRef */
-  setAppHealthByToken(
-    token: string,
-    status: 'healthy' | 'failing' | 'retrying',
-    message?: string | null
-  ): void {
-    this.setAppHealthByShopRef('ldxp', token, status, message)
+  /** Write confirmed host-token shop ref after fingerprint probe. */
+  setShopRef(merchantId: string, platform: string, token: string): void {
+    this.db
+      .prepare(
+        `UPDATE merchants
+         SET shop_platform = ?, shop_token = ?
+         WHERE id = ?`
+      )
+      .run(platform, token, merchantId)
+  }
+
+  /**
+   * Drop scrapable ref when live fingerprint proves wrong family
+   * (keeps collector_kind for UI soft label).
+   */
+  clearShopRef(merchantId: string): void {
+    this.db
+      .prepare(
+        `UPDATE merchants
+         SET shop_platform = NULL, shop_token = NULL,
+             app_health_status = 'never',
+             app_health_at = ?,
+             app_health_message = ?
+         WHERE id = ?`
+      )
+      .run(new Date().toISOString(), '指纹不符，已取消平台标记', merchantId)
+  }
+
+  /** kami/yiciyuan candidates without confirmed scrapable ref — for live probe. */
+  listYiciyuanProbeCandidates(limit = 40): {
+    id: string
+    host: string
+    shopUrl: string | null
+    entryUrl: string | null
+  }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, host, shop_url AS shopUrl, entry_url AS entryUrl
+         FROM merchants
+         WHERE collector_kind IN ('kami', 'yiciyuan')
+           AND host IS NOT NULL AND trim(host) != ''
+           AND (shop_platform IS NULL OR shop_platform = '' OR shop_platform = 'kami')
+         ORDER BY offer_count DESC
+         LIMIT ?`
+      )
+      .all(Math.max(1, Math.min(limit, 100))) as {
+      id: string
+      host: string
+      shopUrl: string | null
+      entryUrl: string | null
+    }[]
+    return rows
   }
 
   findByShopRef(platform: string, token: string): Merchant | null {
@@ -286,7 +361,7 @@ export class MerchantsRepo {
         .prepare(
           `SELECT id, name, shop_platform AS shopPlatform, shop_token AS shopToken
            FROM merchants
-           WHERE ${SCRAPABLE_SQL}
+           WHERE ${SCRAPABLE_SQL} AND ${NOT_BLOCKED_SQL}
            ORDER BY name ASC`
         )
         .all() as { id: string; name: string; shopPlatform: string; shopToken: string }[]
@@ -296,33 +371,34 @@ export class MerchantsRepo {
     }))
   }
 
-  /** @deprecated alias */
-  listLdxpMerchants(): { id: string; name: string; ldxpToken: string }[] {
-    return this.listScrapableMerchants().map((m) => ({
-      id: m.id,
-      name: m.name,
-      ldxpToken: m.shopToken
-    }))
-  }
-
   countScrapable(): number {
     return (
-      this.db.prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${SCRAPABLE_SQL}`).get() as {
+      this.db
+        .prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${SCRAPABLE_SQL} AND ${NOT_BLOCKED_SQL}`)
+        .get() as {
         c: number
       }
     ).c
   }
 
-  /** @deprecated alias */
-  countLdxp(): number {
-    return this.countScrapable()
-  }
-
   count(): number {
-    const row = this.db.prepare(`SELECT COUNT(*) AS c FROM merchants`).get() as {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${NOT_BLOCKED_SQL}`)
+      .get() as {
       c: number
     }
     return row.c
+  }
+
+  isMerchantBlocked(id: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS ok FROM blocked_targets
+         WHERE target_type = 'merchant' AND target_id = ?
+         LIMIT 1`
+      )
+      .get(id) as { ok: number } | undefined
+    return !!row
   }
 
   getById(id: string): Merchant | null {
@@ -337,6 +413,10 @@ export class MerchantsRepo {
     limit?: number
     /** Only these platform ids (e.g. enabled profiles) */
     platformIds?: string[]
+    /**
+     * 后台自动刷新：排除已失败店，避免反复抽到；用户主动同步成功(healthy)后才重新入池。
+     */
+    excludeFailing?: boolean
   }): ScrapableMerchant[] {
     const limitSql = opts.limit ? `LIMIT ${Math.max(1, Math.floor(opts.limit))}` : ''
     const params: Record<string, unknown> = { cutoff: freshCutoff(opts.freshHours) }
@@ -349,11 +429,14 @@ export class MerchantsRepo {
       })
       platformFilter = ` AND shop_platform IN (${keys.join(',')})`
     }
+    const failingFilter = opts.excludeFailing
+      ? ` AND COALESCE(app_health_status, '') != 'failing'`
+      : ''
     return (
       this.db
         .prepare(
           `SELECT id, name, shop_platform AS shopPlatform, shop_token AS shopToken FROM merchants
-           WHERE ${NEEDS_SYNC_SQL}${platformFilter}
+           WHERE ${NEEDS_SYNC_SQL}${platformFilter}${failingFilter}
            ORDER BY offer_count DESC
            ${limitSql}`
         )
@@ -369,18 +452,6 @@ export class MerchantsRepo {
     }))
   }
 
-  /** @deprecated alias */
-  listLdxpNeedingSync(opts: {
-    freshHours: number
-    limit?: number
-  }): { id: string; name: string; ldxpToken: string }[] {
-    return this.listScrapableNeedingSync(opts).map((m) => ({
-      id: m.id,
-      name: m.name,
-      ldxpToken: m.shopToken
-    }))
-  }
-
   candidatesForQuery(q: string, freshHours: number): MerchantCandidates {
     const tokens = tokenizeQuery(q).slice(0, 5)
     if (!tokens.length) return { merchantIds: [], totalMatching: 0, sample: [] }
@@ -393,7 +464,7 @@ export class MerchantsRepo {
         OR product_types_json LIKE ${f} ESCAPE '\\' OR representative_product LIKE ${f} ESCAPE '\\'
         OR representative_offer_title LIKE ${f} ESCAPE '\\')`
     })
-    const matchSql = `${SCRAPABLE_SQL} AND (${tokenClauses.join(' OR ')})`
+    const matchSql = `${SCRAPABLE_SQL} AND ${NOT_BLOCKED_SQL} AND (${tokenClauses.join(' OR ')})`
 
     const totalMatching = (
       this.db.prepare(`SELECT COUNT(*) AS c FROM merchants WHERE ${matchSql}`).get(params) as {
@@ -417,18 +488,399 @@ export class MerchantsRepo {
     }
   }
 
+  /**
+   * Upsert merchants with cross-source identity dedupe:
+   * same shop_platform+shop_token or same normalized shop/entry URL → one row.
+   * When a match already exists, reuse that id (favorites / local health stay put).
+   */
   upsertMany(rows: NormalizedMerchantRow[]): number {
+    if (!rows.length) return 0
     const tx = this.db.transaction((items: NormalizedMerchantRow[]) => {
-      for (const row of items) {
-        const { _shopRefDerived, ...rest } = row
+      // Clean historical dups first so identity map is 1:1.
+      this.dedupeExistingInTx()
+
+      const collapsed = collapseMerchantBatch(items)
+      const keyToId = this.buildIdentityIndex()
+
+      for (const row of collapsed) {
+        const keys = merchantIdentityKeys(row)
+        const matchedIds = new Set<string>()
+        for (const key of keys) {
+          const existingId = keyToId.get(key)
+          if (existingId) matchedIds.add(existingId)
+        }
+
+        let targetId = row.id
+        if (matchedIds.size > 1) {
+          let winner = [...matchedIds][0]!
+          for (const id of matchedIds) winner = preferMerchantId(winner, id)
+          for (const id of matchedIds) {
+            if (id !== winner) this.mergeMerchantIdsInTx(id, winner)
+          }
+          targetId = winner
+        } else if (matchedIds.size === 1) {
+          // Always keep the already-stored id (stable favorites / app health).
+          targetId = [...matchedIds][0]!
+        }
+
+        // Same-id refresh: take incoming catalog as-is.
+        // Cross-id identity hit: merge so a weaker second source does not wipe richer fields.
+        let toWrite: NormalizedMerchantRow
+        if (targetId === row.id) {
+          toWrite = row
+        } else {
+          const existing = this.loadNormalizedById(targetId)
+          const incoming = { ...row, id: targetId }
+          toWrite = existing
+            ? mergeNormalizedMerchantRows(existing, incoming, targetId)
+            : incoming
+        }
+
+        const { _shopRefDerived, ...rest } = toWrite
         this.upsertStmt.run({
           ...rest,
           shop_ref_derived: _shopRefDerived ? 1 : 0
         })
+
+        for (const key of merchantIdentityKeys(toWrite)) {
+          keyToId.set(key, toWrite.id)
+        }
       }
-      return items.length
+
+      this.dedupeExistingInTx()
+      return collapsed.length
     })
     return tx(rows)
+  }
+
+  /** Merge merchants that already share shop ref or normalized URL. Returns deleted count. */
+  dedupeExisting(): number {
+    return this.db.transaction(() => this.dedupeExistingInTx())()
+  }
+
+  /** Load a stored merchant as NormalizedMerchantRow for identity merge. */
+  private loadNormalizedById(id: string): NormalizedMerchantRow | null {
+    const r = this.db
+      .prepare(
+        `SELECT id, name, store_name, host, shop_url, entry_url,
+                source_id, source_name, collector_kind, health_status,
+                offer_count, in_stock_count, out_of_stock_count, product_count, platform_count,
+                platforms_json, product_types_json,
+                representative_product, representative_offer_title, representative_price,
+                representative_currency, lowest_hit_count, warranty_lowest_hit_count,
+                risk_feedback_count, has_platform_aftersales,
+                shop_created_at, included_at, last_success_at, latest_seen_at,
+                consecutive_failures, observation_started_at, generated_at, fetched_at,
+                raw_json, ldxp_token, shop_platform, shop_token, name_norm
+         FROM merchants WHERE id = ?`
+      )
+      .get(id) as
+      | {
+          id: string
+          name: string
+          store_name: string | null
+          host: string | null
+          shop_url: string | null
+          entry_url: string | null
+          source_id: string | null
+          source_name: string | null
+          collector_kind: string | null
+          health_status: string | null
+          offer_count: number
+          in_stock_count: number
+          out_of_stock_count: number
+          product_count: number
+          platform_count: number
+          platforms_json: string
+          product_types_json: string
+          representative_product: string | null
+          representative_offer_title: string | null
+          representative_price: number | null
+          representative_currency: string | null
+          lowest_hit_count: number
+          warranty_lowest_hit_count: number
+          risk_feedback_count: number
+          has_platform_aftersales: number
+          shop_created_at: string | null
+          included_at: string | null
+          last_success_at: string | null
+          latest_seen_at: string | null
+          consecutive_failures: number
+          observation_started_at: string | null
+          generated_at: string | null
+          fetched_at: string
+          raw_json: string | null
+          ldxp_token: string | null
+          shop_platform: string | null
+          shop_token: string | null
+          name_norm: string | null
+        }
+      | undefined
+    if (!r) return null
+    return {
+      id: r.id,
+      name: r.name,
+      store_name: r.store_name,
+      host: r.host,
+      shop_url: r.shop_url,
+      entry_url: r.entry_url,
+      source_id: r.source_id,
+      source_name: r.source_name,
+      collector_kind: r.collector_kind,
+      health_status: r.health_status,
+      offer_count: r.offer_count,
+      in_stock_count: r.in_stock_count,
+      out_of_stock_count: r.out_of_stock_count,
+      product_count: r.product_count,
+      platform_count: r.platform_count,
+      platforms_json: r.platforms_json || '[]',
+      product_types_json: r.product_types_json || '[]',
+      representative_product: r.representative_product,
+      representative_offer_title: r.representative_offer_title,
+      representative_price: r.representative_price,
+      representative_currency: r.representative_currency,
+      lowest_hit_count: r.lowest_hit_count,
+      warranty_lowest_hit_count: r.warranty_lowest_hit_count,
+      risk_feedback_count: r.risk_feedback_count,
+      has_platform_aftersales: r.has_platform_aftersales,
+      shop_created_at: r.shop_created_at,
+      included_at: r.included_at,
+      last_success_at: r.last_success_at,
+      latest_seen_at: r.latest_seen_at,
+      consecutive_failures: r.consecutive_failures,
+      observation_started_at: r.observation_started_at,
+      generated_at: r.generated_at,
+      fetched_at: r.fetched_at,
+      raw_json: r.raw_json ?? '{}',
+      ldxp_token: r.ldxp_token,
+      shop_platform: r.shop_platform,
+      shop_token: r.shop_token,
+      name_norm: r.name_norm ?? r.name.toLowerCase(),
+      _shopRefDerived: !!(r.shop_platform && r.shop_token)
+    }
+  }
+
+  private buildIdentityIndex(): Map<string, string> {
+    const map = new Map<string, string>()
+    const rows = this.db
+      .prepare(
+        `SELECT id, shop_platform, shop_token, shop_url, entry_url, offer_count
+         FROM merchants`
+      )
+      .all() as {
+      id: string
+      shop_platform: string | null
+      shop_token: string | null
+      shop_url: string | null
+      entry_url: string | null
+      offer_count: number
+    }[]
+
+    for (const r of rows) {
+      for (const key of merchantIdentityKeys(r)) {
+        const prev = map.get(key)
+        if (!prev) {
+          map.set(key, r.id)
+          continue
+        }
+        // Ambiguous existing index: keep preferred id (dedupe will merge the other).
+        map.set(key, preferMerchantId(prev, r.id))
+      }
+    }
+    return map
+  }
+
+  private dedupeExistingInTx(): number {
+    let deleted = 0
+    // Iterate until stable (transitive URL/ref links).
+    for (let pass = 0; pass < 8; pass += 1) {
+      const index = new Map<string, string>()
+      const rows = this.db
+        .prepare(
+          `SELECT id, shop_platform, shop_token, shop_url, entry_url
+           FROM merchants`
+        )
+        .all() as {
+        id: string
+        shop_platform: string | null
+        shop_token: string | null
+        shop_url: string | null
+        entry_url: string | null
+      }[]
+
+      let mergedThisPass = 0
+      for (const r of rows) {
+        // Skip if already deleted this pass.
+        const still = this.db.prepare(`SELECT 1 AS ok FROM merchants WHERE id = ?`).get(r.id) as
+          | { ok: number }
+          | undefined
+        if (!still) continue
+
+        for (const key of merchantIdentityKeys(r)) {
+          const existing = index.get(key)
+          if (!existing) {
+            index.set(key, r.id)
+            continue
+          }
+          if (existing === r.id) continue
+          const winner = preferMerchantId(existing, r.id)
+          const loser = winner === existing ? r.id : existing
+          if (this.mergeMerchantIdsInTx(loser, winner)) {
+            deleted += 1
+            mergedThisPass += 1
+            index.set(key, winner)
+            // Rebind other keys of loser that pointed elsewhere — rebuild next pass.
+          }
+        }
+      }
+      if (mergedThisPass === 0) break
+    }
+    return deleted
+  }
+
+  /**
+   * Move FK refs from loser → winner and delete loser.
+   * Returns true if loser was removed.
+   */
+  private mergeMerchantIdsInTx(loserId: string, winnerId: string): boolean {
+    if (loserId === winnerId) return false
+    const loser = this.db.prepare(`SELECT id FROM merchants WHERE id = ?`).get(loserId) as
+      | { id: string }
+      | undefined
+    const winner = this.db.prepare(`SELECT id FROM merchants WHERE id = ?`).get(winnerId) as
+      | { id: string }
+      | undefined
+    if (!loser || !winner) return false
+
+    // Copy richer catalog fields onto winner when loser is better filled.
+    const both = this.db
+      .prepare(
+        `SELECT id, name, store_name, host, shop_url, entry_url, source_id, source_name,
+                collector_kind, health_status, offer_count, in_stock_count, out_of_stock_count,
+                product_count, platform_count, platforms_json, product_types_json,
+                representative_product, representative_offer_title, representative_price,
+                representative_currency, shop_platform, shop_token, ldxp_token, name_norm
+         FROM merchants WHERE id IN (?, ?)`
+      )
+      .all(loserId, winnerId) as Record<string, unknown>[]
+
+    const w = both.find((r) => r.id === winnerId)
+    const l = both.find((r) => r.id === loserId)
+    if (w && l) {
+      const pickStr = (a: unknown, b: unknown): string | null => {
+        const as = typeof a === 'string' && a.trim() ? a.trim() : null
+        const bs = typeof b === 'string' && b.trim() ? b.trim() : null
+        return as ?? bs
+      }
+      const maxN = (a: unknown, b: unknown): number =>
+        Math.max(typeof a === 'number' ? a : 0, typeof b === 'number' ? b : 0)
+
+      this.db
+        .prepare(
+          `UPDATE merchants SET
+             name = COALESCE(NULLIF(trim(name), ''), ?),
+             store_name = COALESCE(store_name, ?),
+             host = COALESCE(host, ?),
+             shop_url = COALESCE(shop_url, ?),
+             entry_url = COALESCE(entry_url, ?),
+             source_name = CASE
+               WHEN source_name IS NOT NULL AND source_name != '' AND ? IS NOT NULL AND ? != ''
+                    AND instr(source_name, ?) = 0
+               THEN source_name || ' · ' || ?
+               WHEN source_name IS NULL OR source_name = '' THEN ?
+               ELSE source_name
+             END,
+             collector_kind = COALESCE(collector_kind, ?),
+             offer_count = MAX(offer_count, ?),
+             in_stock_count = MAX(in_stock_count, ?),
+             out_of_stock_count = MAX(out_of_stock_count, ?),
+             product_count = MAX(product_count, ?),
+             shop_platform = COALESCE(shop_platform, ?),
+             shop_token = COALESCE(shop_token, ?),
+             ldxp_token = COALESCE(ldxp_token, ?)
+           WHERE id = ?`
+        )
+        .run(
+          String(l.name ?? w.name),
+          pickStr(l.store_name, null),
+          pickStr(l.host, null),
+          pickStr(l.shop_url, null),
+          pickStr(l.entry_url, null),
+          pickStr(l.source_name, null),
+          pickStr(l.source_name, null),
+          pickStr(l.source_name, null) ?? '',
+          pickStr(l.source_name, null),
+          pickStr(l.source_name, null),
+          pickStr(l.collector_kind, null),
+          maxN(l.offer_count, 0),
+          maxN(l.in_stock_count, 0),
+          maxN(l.out_of_stock_count, 0),
+          maxN(l.product_count, 0),
+          pickStr(l.shop_platform, null),
+          pickStr(l.shop_token, null),
+          pickStr(l.ldxp_token, null),
+          winnerId
+        )
+    }
+
+    // Favorites / recent / blocked: drop loser if winner already has the row.
+    this.db
+      .prepare(
+        `DELETE FROM favorites
+         WHERE target_type = 'merchant' AND target_id = ?
+           AND EXISTS (
+             SELECT 1 FROM favorites f2
+             WHERE f2.target_type = 'merchant' AND f2.target_id = ?
+           )`
+      )
+      .run(loserId, winnerId)
+    this.db
+      .prepare(
+        `UPDATE favorites SET target_id = ?
+         WHERE target_type = 'merchant' AND target_id = ?`
+      )
+      .run(winnerId, loserId)
+
+    this.db
+      .prepare(
+        `DELETE FROM recent_views
+         WHERE target_type = 'merchant' AND target_id = ?
+           AND EXISTS (
+             SELECT 1 FROM recent_views r2
+             WHERE r2.target_type = 'merchant' AND r2.target_id = ?
+           )`
+      )
+      .run(loserId, winnerId)
+    this.db
+      .prepare(
+        `UPDATE recent_views SET target_id = ?
+         WHERE target_type = 'merchant' AND target_id = ?`
+      )
+      .run(winnerId, loserId)
+
+    this.db
+      .prepare(
+        `DELETE FROM blocked_targets
+         WHERE target_type = 'merchant' AND target_id = ?
+           AND EXISTS (
+             SELECT 1 FROM blocked_targets b2
+             WHERE b2.target_type = 'merchant' AND b2.target_id = ?
+           )`
+      )
+      .run(loserId, winnerId)
+    this.db
+      .prepare(
+        `UPDATE blocked_targets SET target_id = ?
+         WHERE target_type = 'merchant' AND target_id = ?`
+      )
+      .run(winnerId, loserId)
+
+    this.db
+      .prepare(`UPDATE shop_products SET merchant_id = ? WHERE merchant_id = ?`)
+      .run(winnerId, loserId)
+
+    this.db.prepare(`DELETE FROM merchants WHERE id = ?`).run(loserId)
+    return true
   }
 
   /**
@@ -440,9 +892,7 @@ export class MerchantsRepo {
     const idSub = `SELECT id FROM merchants WHERE ${noLink}`
     const run = this.db.transaction(() => {
       this.db
-        .prepare(
-          `DELETE FROM favorites WHERE target_type = 'merchant' AND target_id IN (${idSub})`
-        )
+        .prepare(`DELETE FROM favorites WHERE target_type = 'merchant' AND target_id IN (${idSub})`)
         .run()
       this.db
         .prepare(
@@ -456,7 +906,7 @@ export class MerchantsRepo {
   }
 
   list(query: MerchantListQuery): { rows: Merchant[]; total: number } {
-    const where: string[] = []
+    const where: string[] = [NOT_BLOCKED_SQL]
     const params: Record<string, unknown> = {}
 
     if (query.q?.trim()) {
@@ -477,9 +927,10 @@ export class MerchantsRepo {
             `(${SCRAPABLE_SQL} AND (app_health_status IS NULL OR app_health_status = '' OR app_health_status = 'never'))`
           )
         } else {
+          // healthy / failing / retrying: only scrapable rows (match deriveAppHealthStatus)
           const key = `h${i}`
           params[key] = h
-          parts.push(`app_health_status = @${key}`)
+          parts.push(`(${SCRAPABLE_SQL} AND app_health_status = @${key})`)
         }
       })
       if (parts.length) where.push(`(${parts.join(' OR ')})`)
@@ -502,10 +953,23 @@ export class MerchantsRepo {
           params[key] = p
           return `@${key}`
         })
-        parts.push(`shop_platform IN (${keys.join(',')})`)
+        // shop_platform primary; host-token families also match PriceAI collector_kind before backfill
+        const collectorOr: string[] = []
+        if (explicit.includes('dujiao')) {
+          collectorOr.push(`collector_kind = 'dujiao'`)
+        }
+        if (explicit.includes('yiciyuan')) {
+          collectorOr.push(`collector_kind IN ('kami', 'yiciyuan')`)
+        }
+        if (collectorOr.length) {
+          parts.push(`(shop_platform IN (${keys.join(',')}) OR ${collectorOr.join(' OR ')})`)
+        } else {
+          parts.push(`shop_platform IN (${keys.join(',')})`)
+        }
       }
       if (wantOther) {
         // Align with mapRow dual-fill: ldxp_token without shop_platform counts as ldxp, not other.
+        // Host-token families matched only via collector_kind (pre-backfill) are also not other.
         const known = knownShopPlatformIds()
         if (known.length) {
           const keys = known.map((id, i) => {
@@ -519,11 +983,17 @@ export class MerchantsRepo {
               OR (
                 (shop_platform IS NULL OR shop_platform = '')
                 AND (ldxp_token IS NULL OR ldxp_token = '')
+                AND (
+                  collector_kind IS NULL
+                  OR collector_kind NOT IN ('dujiao', 'kami', 'yiciyuan')
+                )
               )
             )`
           )
         } else {
-          parts.push(`(shop_platform IS NULL OR shop_platform = '') AND (ldxp_token IS NULL OR ldxp_token = '')`)
+          parts.push(
+            `(shop_platform IS NULL OR shop_platform = '') AND (ldxp_token IS NULL OR ldxp_token = '')`
+          )
         }
       }
       if (parts.length) where.push(`(${parts.join(' OR ')})`)

@@ -92,11 +92,12 @@ export interface JsonGetHeadersOptions extends BaseBrowserHeaderOptions {
 
 /** JSON GET (PriceAI / generic HttpClient). */
 export function browserJsonGetHeaders(options: JsonGetHeadersOptions): Record<string, string> {
+  // Do not set Sec-Fetch-Mode: cors|same-origin — Electron session.fetch rejects them
+  // with net::ERR_INVALID_ARGUMENT (Chromium forbids those values on Fetch API).
   const headers: Record<string, string> = {
     ...browserBaseHeaders(options),
     Accept: 'application/json, text/plain, */*',
     'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': options.fetchSite ?? 'none'
   }
   if (options.referer) headers.Referer = options.referer
@@ -106,6 +107,7 @@ export function browserJsonGetHeaders(options: JsonGetHeadersOptions): Record<st
 
 export interface DocumentNavHeadersOptions extends BaseBrowserHeaderOptions {
   visitorId?: string
+  cookie?: string
 }
 
 /** First-party document navigation (shop page warmup). */
@@ -121,6 +123,7 @@ export function browserDocumentHeaders(options: DocumentNavHeadersOptions): Reco
     'Sec-Fetch-User': '?1'
   }
   if (options.visitorId) headers.Visitorid = options.visitorId
+  if (options.cookie) headers.Cookie = options.cookie
   return headers
 }
 
@@ -134,6 +137,7 @@ export interface CorsApiHeadersOptions extends BaseBrowserHeaderOptions {
 
 /** Same-origin XHR/fetch JSON API (shopApi POST). */
 export function browserCorsApiHeaders(options: CorsApiHeadersOptions): Record<string, string> {
+  // Omit Sec-Fetch-Mode: cors — Electron session.fetch → net::ERR_INVALID_ARGUMENT
   const headers: Record<string, string> = {
     ...browserBaseHeaders(options),
     'Content-Type': options.contentType ?? 'application/json',
@@ -141,7 +145,6 @@ export function browserCorsApiHeaders(options: CorsApiHeadersOptions): Record<st
     Origin: options.origin,
     Referer: options.referer,
     'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'same-origin'
   }
   if (options.visitorId) headers.Visitorid = options.visitorId

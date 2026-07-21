@@ -3,7 +3,7 @@
 | 字段     | 值                                                                      |
 | -------- | ----------------------------------------------------------------------- |
 | 版本     | 1.0(2026-07-17)                                                         |
-| 状态     | 已确认方向:双主题跟随系统 · 搜索即首页 · 石墨+黄铜 · macOS 无边框标题栏 |
+| 状态     | 已确认方向:双主题默认跟系统可手动 · 搜索即首页 · 石墨+黄铜 · macOS 无边框标题栏 |
 | register | product(工具型 UI)                                                      |
 | 适用范围 | `src/renderer/**` 全部界面,`src/main/index.ts` 窗口配置                 |
 
@@ -28,8 +28,8 @@
 
 ## 2. 主题架构
 
-- 双主题,**跟随系统**,无手动开关。实现:`:root { color-scheme: light dark }` + 全令牌 `light-dark()` 函数(Chromium 123+,Electron 39 原生支持)。
-- 主进程窗口 `backgroundColor` 依 `nativeTheme.shouldUseDarkColors` 设定并监听 `updated` 事件,避免主题切换/启动白闪。
+- 双主题。设置项 `theme`:`system`(默认)/`light`/`dark`。实现:`:root { color-scheme: light dark }` + 全令牌 `light-dark()`;主进程 `nativeTheme.themeSource` 同步设置值(截图钩子 `MA_THEME` 优先)。
+- 主进程窗口 `backgroundColor`(及 Windows `titleBarOverlay`)依 `nativeTheme.shouldUseDarkColors` 设定并监听 `updated` 事件,避免主题切换/启动白闪,标题栏与内容同色(见 §8.3)。
 - 组件与页面样式**只允许引用语义令牌**,禁止裸色值;两主题共享同一套语义角色。
 
 ## 3. 色彩系统
@@ -127,7 +127,7 @@
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Button**                | 高度 32px(s: 26px),radius 6,text-l/500。变体:`primary`(黄铜填充 + `--accent-ink` 文字 + `--accent-edge` 描边)· `default`(`--bg-raised` + `--border-strong` 描边)· `ghost`(无框,悬停 `--bg-hover`)· `danger`(danger 文字 + 描边,填充仅确认对话框内)。loading:内置 14px 旋转圆环,文字保留。                                                                                                                                                                                                                                                                                                                          |
 | **IconButton**            | 28×28,ghost 样式;必须带 `aria-label` 与 `title`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| **Input / Select 触发器** | 高度 32px,`--bg-raised` 底 + `--border-strong` 描边;focus 切 `--focus` 环(offset 0 贴边);占位符用 `--ink-3`(已验 ≥4.5:1)。搜索主输入为 40px 特例。                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Input / Select 触发器** | 高度 32px,字号 text-l,`--bg-raised` 底 + `--border-strong` 描边;focus 切 `--focus` 环(offset 0 贴边);占位符用 `--ink-3`(已验 ≥4.5:1)。搜索主输入为 40px 特例。过滤行紧凑输入(价格区间/排除词/行内编辑)高度 26px、字号 text-s,与 Chip 对齐。                                                                                                                                                                                                                                                                                                                                                                      |
 | **Select(下拉)**          | **全自绘,禁止原生弹出菜单**(`<select>` 不得出现在 renderer)。触发器=Input 规格 + 右侧 chevron(展开旋转 180°);面板=顶层 popover,CSS 锚定触发器下方 4px(`position-area`,空间不足 `flip-block` 自动上翻,`anchor-size` 保证宽度 ≥ 触发器),`--bg-overlay` + 边框 + shadow-2,radius-m,max-height 320;选项 30px/radius-xs,活动项 7% 墨色底(浮层底更亮,`--bg-hover` 不够辨识),选中项黄铜 ✓ + 500 字重(✓ 计入 §3.2 白名单:选中态),隐藏 ✓ 占位保证对齐;键盘=select-only combobox 模式:↑↓/Home/End 移动、Enter/Space 提交、Esc/外点光解散、Tab 关闭不提交、字符前缀跳转;焦点始终在触发器,`aria-activedescendant` 指示活动项。 |
 | **Checkbox**              | 原生 `accent-color: var(--accent)`,16px。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Switch**                | 34×20 轨道,用于设置页布尔项;开=黄铜轨道,关=`--border-strong`;圆点 16px,`--dur-2` 过渡。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -143,7 +143,8 @@
 | **Dialog**                | 原生 `<dialog>.showModal()`;radius-l,`--bg-overlay`,shadow-3;标题 text-xl,正文 text-m/`--ink-2`;按钮右对齐(取消 default + 确认 primary/danger)。Promise 风格 `confirm(spec)` API,**全面替换 `window.confirm`**。backdrop `oklch(0 0 0 / 45%)`。                                                                                                                                                                                                                                                                                                                                                                    |
 | **Toast**                 | 右上角(mac 无边框时避开红绿灯下移),`--bg-overlay` + 边框 + shadow-2,radius-m;text-m;4s 自动消失;成功/失败前置 StatusDot。**替换全部 flash banner。**                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **Drawer(比价)**          | 右侧滑出 420px,`--bg-overlay`,左缘发丝线 + shadow-3;Esc/遮罩点击关闭;头部:标题 + 关闭 IconButton。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **Icon**                  | 手绘内联 SVG,16×16,stroke 1.5,round cap/join,`currentColor`。集合:search / store / bookmark / sync / gear / clock / external / refresh / close / check / chevron-down / chevron-right / download / compare / alert / spinner。禁止混入其他风格图标。                                                                                                                                                                                                                                                                                                                                                               |
+| **Icon**                  | 手绘内联 SVG,viewBox 16×16,stroke 1.5,round cap/join,`currentColor`。默认渲染 16px;紧凑场景(行内操作、Select chevron、分页)14px。集合:search / store / bookmark / sync / gear / clock / external / refresh / close / check / chevron-down / chevron-right / download / compare / alert / spinner。禁止混入其他风格图标。                                                                                                                                                                                                                                                                                     |
+| **Pagination**            | 紧凑档 30px:页码按钮 / 每页 Select / 跳转 Input 统一高度 30、字号 text-s;与主控件 32 刻意区分,仅用于表格底栏。 |
 
 ## 8. 交互模式
 
@@ -164,17 +165,21 @@
 - 操作回执(已收藏/已开始同步/已保存):Toast,不再用页面内 banner 挤压布局。
 - 错误:同步错误落同步中心 + 侧栏状态件变 danger;表单错误就地红字。
 
-### 8.3 macOS 原生化窗口
+### 8.3 窗口铬色与平台标题栏
 
-- `titleBarStyle: 'hiddenInset'`(仅 darwin;Win/Linux 保持默认 + `autoHideMenuBar`)。
-- 红绿灯悬于侧栏 sunken 底上;侧栏顶部预留 52px;`minWidth 960 / minHeight 620`。
-- 渲染层以 `data-platform="darwin|win32|linux"` 适配留白。
+目标:**标题栏与内容同色一体**,不出现系统默认白/黑条「两层皮」。
+
+- **共用**:主进程 `backgroundColor` + 主题切换时 `setBackgroundColor`,色值对齐 `--bg`(深 `#0f0e0c` / 浅 `#f8f7f4`);`minWidth 960 / minHeight 620`;`autoHideMenuBar`。
+- **macOS**:`titleBarStyle: 'hiddenInset'`;红绿灯悬于侧栏 `--bg-sunken` 上;侧栏顶部预留 52px + drag;主区顶 14px 隐形拖拽条。
+- **Windows**:`titleBarStyle: 'hidden'` + `titleBarOverlay`(`color`=`--bg` 近似,`symbolColor`=`--ink` 近似,`height` 36);主题切换时 `setTitleBarOverlay` 同步;主区 `padding-top: env(titlebar-area-height)` + 同高 drag 条(底 `--bg`);侧栏整列可拖(交互项 `no-drag`)。
+- **Linux**:保持系统装饰 + `backgroundColor`(各 DE 标题栏能力不一,不强行 WCO)。
+- 渲染层以 `data-platform="darwin|win32|linux"` 适配留白与拖拽。
 
 ## 9. 页面规格
 
 ### 9.1 搜索(首页)
 
-- 头部:40px 大输入框(左 search 图标,右 ⌘K Kbd),宽 ≤720px;右侧排序 Segmented(相关度/价格↑)+ 仅有货 Chip + CSV 导出 IconButton。
+- 头部:40px 大输入框(左 search 图标,右 ⌘K Kbd),宽 ≤720px;右侧价格区间 + 保存当前 + CSV 导出。排序默认相关度，价格/库存等走表头；非相关度时顶栏出现「相关度」ghost 按钮可一键恢复。
 - 过滤行:规格 chips(质保/直登/成品/Pro/Plus/邮箱/Claude/GPT)+ 命中后店铺 facet chips(计数用等宽)。
 - **起始态**(有数据、无查询):「从上次继续」最近浏览 6–8 条(单行列表:标题 + 类型 + 相对时间,点击=按标题重搜/进商家)+ 规格 chips。教用户从哪开始,不留白屏。
 - **冷启动空态**(无商家/无商品):EmptyState 分阶段——`need_merchants`:一键初始化(primary)+ 只同步商家(default);`need_products`:同步 Top 50(primary)+ 全量 ldxp + 去商家列表。承接原首页职责。
@@ -204,7 +209,7 @@
 
 ### 9.5 设置
 
-- max-width 560;三个分组面板:**同步**(暂停所有网络同步 Switch / 允许 ldxp 深刮 Switch / PriceAI 间隔 / ldxp 最小间隔 / 新鲜期小时,数字输入右缀单位)· **外链**(模式 Select + 各选项一行说明)· **数据与诊断**(诊断 JSON 折叠 `<details>`,等宽 11px)。
+- max-width 560;分组面板:**外观**(主题 Select:跟随系统/浅色/深色)· **同步**(暂停所有网络同步 Switch / 允许 ldxp 深刮 Switch / PriceAI 间隔 / ldxp 最小间隔 / 新鲜期小时,数字输入右缀单位)· **外链**(模式 Select + 各选项一行说明)· **屏蔽名单**· **数据与诊断**(诊断 JSON 折叠 `<details>`,等宽 11px)。
 - 每项:label text-m + 说明 text-s/`--ink-2`;保存回执 Toast「已保存」。
 
 ## 10. 无障碍与质量门槛(发布前逐项过)
@@ -253,4 +258,4 @@ scripts/check-contrast.mjs  # 令牌对比度回归
 
 - 删除:`pages/HomePage.tsx`、`pages/PlaceholderPage.tsx`、`components/Versions.tsx`、`assets/{main,base}.css`、`assets/*.svg`。
 - 依赖新增:`@fontsource/ibm-plex-mono`(唯一新增;不引组件库、不引动效库——本规范动效均为 CSS 可达)。
-- 主进程:`titleBarStyle`/`minWidth`/`backgroundColor(nativeTheme)` + `MA_SCREENSHOT_DIR` 截图钩子(dev 工具,环境变量门控)。
+- 主进程:`titleBarStyle`(mac hiddenInset / Win hidden+titleBarOverlay)/`minWidth`/`backgroundColor`+Win 铬色随 `nativeTheme` + `MA_SCREENSHOT_DIR` 截图钩子(dev 工具,环境变量门控)。

@@ -1,0 +1,328 @@
+﻿/* shell.css — 应用壳层 / 导航 / 页头 */
+
+/* ================= 壳层 ================= */
+
+.app {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  height: 100%;
+  background: var(--bg);
+}
+
+.sidebar {
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 10px 10px;
+  user-select: none;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* mac: 红绿灯落在侧栏 sunken 底上; Win: 侧栏顶可拖,与主区标题带一体 */
+[data-platform='darwin'] .sidebar {
+  padding-top: 52px;
+  -webkit-app-region: drag;
+}
+[data-platform='win32'] .sidebar {
+  -webkit-app-region: drag;
+}
+.sidebar a,
+.sidebar button {
+  -webkit-app-region: no-drag;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 12px;
+  font-size: var(--text-m);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.brand-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+  flex: none;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-s);
+  text-decoration: none;
+  color: var(--ink-2);
+  font-size: var(--text-m);
+  font-weight: 500;
+  transition:
+    background var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+.nav a svg {
+  flex: none;
+  opacity: 0.75;
+}
+.nav a:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+.nav a.active {
+  background: var(--accent-wash);
+  color: var(--ink);
+}
+.nav a.active svg {
+  color: var(--accent-text);
+  opacity: 1;
+}
+.nav .nav-kbd {
+  margin-left: auto;
+}
+
+/* 侧栏底部:同步状态件 */
+.side-foot {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.sync-widget {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  padding: 10px 10px 8px;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.sync-widget:hover {
+  background: var(--bg-hover);
+}
+.sync-widget-hit {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.sync-counts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 2px;
+  font-size: var(--text-s);
+  color: var(--ink-3);
+  min-width: 0;
+}
+.sync-counts .num {
+  color: var(--ink-2);
+}
+.sync-widget .sync-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--text-s);
+  color: var(--ink-2);
+  margin-bottom: 6px;
+  min-width: 0;
+}
+.sync-widget .sync-title .sync-widget-hit {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-widget .sync-line {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+  margin-top: 6px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sync-widget.is-error .sync-title {
+  color: var(--danger);
+}
+
+.main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.drag-strip {
+  display: none;
+}
+[data-platform='darwin'] .drag-strip {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 14px;
+  -webkit-app-region: drag;
+  z-index: var(--z-sticky);
+}
+/* Win: 自绘标题栏拖拽区（右侧留给窗控） */
+[data-platform='win32'] {
+  --titlebar-h: 36px;
+  --window-ctrl-w: 46px;
+  --window-ctrl-strip: calc(var(--window-ctrl-w) * 3);
+}
+[data-platform='win32'] .drag-strip {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: var(--window-ctrl-strip);
+  height: var(--titlebar-h);
+  -webkit-app-region: drag;
+  z-index: var(--z-sticky);
+  background: var(--bg);
+}
+[data-platform='win32'] .main {
+  padding-top: var(--titlebar-h);
+  position: relative;
+}
+
+/* Win 自绘窗控：在文档流内，弹窗蒙层可盖住 */
+[data-platform='win32'] .window-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: var(--titlebar-h);
+  display: flex;
+  z-index: var(--z-sticky);
+  -webkit-app-region: no-drag;
+}
+.window-controls {
+  display: none;
+}
+[data-platform='win32'] .window-ctrl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--window-ctrl-w);
+  height: var(--titlebar-h);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: default;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+[data-platform='win32'] .window-ctrl:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+[data-platform='win32'] .window-ctrl:active {
+  background: color-mix(in oklch, var(--ink) 12%, transparent);
+}
+[data-platform='win32'] .window-ctrl-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+[data-platform='win32'] .window-ctrl-close:active {
+  background: #c50f1f;
+  color: #fff;
+}
+.window-ctrl-glyph {
+  display: block;
+  pointer-events: none;
+}
+
+.content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.route-alive {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 24px 28px 28px;
+  background: var(--bg);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+  transition:
+    opacity 400ms var(--ease-out),
+    visibility 0s linear 400ms;
+}
+.route-alive.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 1;
+  transition:
+    opacity 400ms var(--ease-out),
+    visibility 0s;
+}
+@starting-style {
+  .route-alive.is-active {
+    opacity: 0;
+  }
+}
+
+/* 页头模式 */
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.page-title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  line-height: 1.3;
+}
+.page-meta {
+  margin-top: 3px;
+  font-size: var(--text-s);
+  color: var(--ink-2);
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

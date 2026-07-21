@@ -14,8 +14,23 @@ import {
 import { registerIpcHandlers } from './ipc/register'
 import { SyncOrchestrator } from './services/sync-orchestrator'
 import { SearchService } from './services/search-service'
+import {
+  initAutoRefreshScheduler,
+  getAutoRefreshScheduler,
+  type AutoRefreshScheduler
+} from './services/auto-refresh-scheduler'
 import { createLogger } from './utils/logger'
 import { ensureSystemProxy } from './utils/main-fetch'
+import { evaluateOpenExternal } from './utils/url-safety'
+import { applyThemeSource } from './theme'
+import { applyWindowChrome, baseThemeChrome } from './window-chrome'
+import { IPC_CHANNELS } from '@shared/types/ipc'
+
+// Quiet Chromium net/ssl handshake spam (e.g. net_error -100) on stderr.
+// Set MA_CHROMIUM_VERBOSE=1 to keep full Chromium logs for debugging.
+if (!process.env['MA_CHROMIUM_VERBOSE']) {
+  app.commandLine.appendSwitch('log-level', '3')
+}
 
 const log = createLogger('main')
 
@@ -23,11 +38,7 @@ let db: Database.Database | null = null
 let repos: Repositories | null = null
 let sync: SyncOrchestrator | null = null
 let search: SearchService | null = null
-
-/** 与 tokens.css 中 --bg 对齐,避免启动/主题切换白闪(DESIGN.md §2) */
-function themeBackground(): string {
-  return nativeTheme.shouldUseDarkColors ? '#0f0e0c' : '#f8f7f4'
-}
+let autoRefresh: AutoRefreshScheduler | null = null
 
 /**
  * 设计审查截图钩子(dev 工具),逐路由截图后自动退出:
@@ -98,6 +109,7 @@ function createWindow(): void {
     app.dock?.setIcon(appIcon)
   }
 
+  const chrome = baseThemeChrome()
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -105,10 +117,15 @@ function createWindow(): void {
     minHeight: 620,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: themeBackground(),
+    backgroundColor: chrome.background,
     // Win/Linux 任务栏与窗口图标；macOS 窗口忽略此项，已用 dock.setIcon
     ...(appIcon && process.platform !== 'darwin' ? { icon: appIcon } : {}),
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
+    // mac: 红绿灯嵌内容区; Win: 隐藏系统标题栏，窗控由渲染层自绘（弹窗可盖住）
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' as const }
+      : process.platform === 'win32'
+        ? { titleBarStyle: 'hidden' as const }
+        : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -117,9 +134,17 @@ function createWindow(): void {
     }
   })
 
-  nativeTheme.on('updated', () => {
-    if (!mainWindow.isDestroyed()) mainWindow.setBackgroundColor(themeBackground())
-  })
+  nativeTheme.on('updated', () => applyWindowChrome(mainWindow))
+
+  // Win 自绘窗控：最大化状态推给渲染层
+  if (process.platform === 'win32') {
+    const pushMaximized = (): void => {
+      if (mainWindow.isDestroyed()) return
+      mainWindow.webContents.send(IPC_CHANNELS.windowMaximized, mainWindow.isMaximized())
+    }
+    mainWindow.on('maximize', pushMaximized)
+    mainWindow.on('unmaximize', pushMaximized)
+  }
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -128,8 +153,16 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
+    // Always deny popup creation; open allowed http(s) in system browser.
+    try {
+      const decision = evaluateOpenExternal(details.url)
+      if (decision.action === 'allow') {
+        void shell.openExternal(details.url)
+      }
+    } catch {
+      // invalid URL / unsupported protocol — deny
+    }
+    return { action: 'deny' as const }
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -146,7 +179,8 @@ function initDatabase(): void {
   repos = createRepositories(db)
   sync = new SyncOrchestrator(repos)
   search = new SearchService(db)
-  registerIpcHandlers({ repos, sync, search })
+  autoRefresh = initAutoRefreshScheduler(repos, sync)
+  registerIpcHandlers({ db, repos, sync, search, autoRefresh })
   log.info('database ready', {
     filePath: opened.filePath,
     schemaVersion: opened.schemaVersion,
@@ -159,11 +193,6 @@ function initDatabase(): void {
 app.whenReady().then(() => {
   // Windows 任务栏分组 / 通知图标身份（须与 electron-builder appId 一致时更稳）
   electronApp.setAppUserModelId('com.merchant-aggregator')
-
-  const forcedTheme = process.env['MA_THEME']
-  if (forcedTheme === 'dark' || forcedTheme === 'light') {
-    nativeTheme.themeSource = forcedTheme
-  }
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -179,7 +208,14 @@ app.whenReady().then(() => {
     return
   }
 
+  // 建窗前应用主题,避免首帧闪错色;MA_THEME 在 applyThemeSource 内优先
+  applyThemeSource(repos!.settings.get().theme)
+
   void ensureSystemProxy()
+
+  // Background per-platform random shop refresh (runs for whole app lifetime)
+  autoRefresh!.start()
+
   createWindow()
 
   app.on('activate', function () {
@@ -194,9 +230,11 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  getAutoRefreshScheduler()?.stop()
   closeDatabase(db)
   db = null
   repos = null
   sync = null
   search = null
+  autoRefresh = null
 })

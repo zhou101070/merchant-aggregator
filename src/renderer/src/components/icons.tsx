@@ -33,12 +33,6 @@ const PATHS: Record<string, React.JSX.Element> = {
       <circle cx="10.5" cy="11.75" r="1.5" />
     </>
   ),
-  clock: (
-    <>
-      <circle cx="8" cy="8" r="5.6" />
-      <path d="M8 4.9V8l2.1 1.3" />
-    </>
-  ),
   external: (
     <>
       <path d="M9.75 2.5h3.75v3.75" />
@@ -76,17 +70,10 @@ const PATHS: Record<string, React.JSX.Element> = {
       <path d="M2.75 13.5h10.5" />
     </>
   ),
-  compare: (
+  copy: (
     <>
-      <path d="M11.25 2.9 13.5 5.15H4.75" />
-      <path d="m4.75 13.1-2.25-2.25h8.75" />
-    </>
-  ),
-  alert: (
-    <>
-      <path d="M8 2.9 14.3 13.3H1.7L8 2.9Z" />
-      <path d="M8 7v2.6" />
-      <path d="M8 11.5v.01" />
+      <path d="M5.5 5.25h6.5a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-6.5a1 1 0 0 1-1-1v-6.5a1 1 0 0 1 1-1Z" />
+      <path d="M3.75 10.75V3.75a1 1 0 0 1 1-1h7" />
     </>
   )
 }

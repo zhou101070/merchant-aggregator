@@ -30,7 +30,7 @@ export class SettingsRepo {
 
   set(partial: Partial<AppSettings>): AppSettings {
     const patched = dualWriteSettingsPatch(partial)
-    const next = { ...this.get(), ...patched }
+    const next = coalesceAppSettings(this.get(), patched)
     // ensure dual-fill on disk
     next.ldxpScrapeEnabled = next.shopScrapeEnabled
     next.ldxpMinIntervalMs = next.shopMinIntervalMs

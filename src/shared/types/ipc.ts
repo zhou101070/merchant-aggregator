@@ -1,9 +1,17 @@
-import type { Favorite, FavoriteTargetType, RecentView } from './favorites'
+import type { BlockedTarget, BlockTargetType } from './blocklist'
+import type { Favorite, FavoriteTargetType, FavoriteUpdateRequest, RecentView } from './favorites'
 import type { Merchant, MerchantCandidates, MerchantListQuery } from './merchant'
-import type { CompareRequest, CompareResult, ShopProduct, ShopProductListQuery } from './product'
-import type { SearchMeta, SearchQuery, SearchResult } from './search'
+import type {
+  RefreshStockRequest,
+  RefreshStockResult,
+  ShopProduct,
+  ShopProductListQuery
+} from './product'
+import type { SearchQuery, SearchResult } from './search'
 import type { AppSettings } from './settings'
 import type {
+  JobPoolSnapshot,
+  SyncHttpRequestEntry,
   SyncJobListQuery,
   SyncJobListResult,
   SyncProgressEvent,
@@ -16,25 +24,44 @@ export const IPC_CHANNELS = {
   merchantsGet: 'merchants:get',
   merchantsCandidates: 'merchants:candidates',
   shopProductsList: 'shopProducts:list',
-  productsCompare: 'products:compare',
+  productsRefreshStock: 'products:refreshStock',
   searchQuery: 'search:query',
-  searchMeta: 'search:meta',
   syncStart: 'sync:start',
   syncCancel: 'sync:cancel',
   syncStatus: 'sync:status',
   syncProgress: 'sync:progress',
+  /** main → renderer: single SyncHttpRequestEntry upsert */
+  syncRequestLog: 'sync:requestLog',
+  syncListRequestLogs: 'sync:listRequestLogs',
+  syncClearRequestLogs: 'sync:clearRequestLogs',
+  syncPoolSnapshot: 'sync:poolSnapshot',
+  syncGetPoolSnapshot: 'sync:getPoolSnapshot',
   syncDeleteJob: 'sync:deleteJob',
   syncClearHistory: 'sync:clearHistory',
   syncListJobs: 'sync:listJobs',
   favoritesList: 'favorites:list',
   favoritesAdd: 'favorites:add',
+  favoritesUpdate: 'favorites:update',
   favoritesRemove: 'favorites:remove',
   recentList: 'recent:list',
   recentTouch: 'recent:touch',
+  blocklistList: 'blocklist:list',
+  blocklistAdd: 'blocklist:add',
+  blocklistRemove: 'blocklist:remove',
+  blocklistClear: 'blocklist:clear',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  /** Wipe local business data (keeps settings). */
+  dataClearAll: 'data:clearAll',
   shellOpenExternal: 'shell:openExternal',
-  diagnosticsGet: 'diagnostics:get'
+  diagnosticsGet: 'diagnostics:get',
+  /** Win 自绘窗控 */
+  windowMinimize: 'window:minimize',
+  windowMaximizeToggle: 'window:maximizeToggle',
+  windowClose: 'window:close',
+  windowIsMaximized: 'window:isMaximized',
+  /** main → renderer: boolean */
+  windowMaximized: 'window:maximized'
 } as const
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS]
@@ -50,11 +77,10 @@ export interface RendererApi {
     list: (q: ShopProductListQuery) => Promise<{ rows: ShopProduct[]; total: number }>
   }
   products: {
-    compare: (req: CompareRequest) => Promise<CompareResult>
+    refreshStock: (req: RefreshStockRequest) => Promise<RefreshStockResult>
   }
   search: {
     query: (req: SearchQuery) => Promise<SearchResult>
-    meta: () => Promise<SearchMeta>
   }
   sync: {
     start: (req: SyncStartRequest) => Promise<{ jobId: string }>
@@ -63,7 +89,12 @@ export interface RendererApi {
     listJobs: (q?: SyncJobListQuery) => Promise<SyncJobListResult>
     deleteJob: (jobId: string) => Promise<{ ok: boolean; reason?: string }>
     clearHistory: () => Promise<{ deleted: number }>
+    listRequestLogs: () => Promise<SyncHttpRequestEntry[]>
+    clearRequestLogs: () => Promise<{ ok: boolean }>
+    getPoolSnapshot: (jobId: string) => Promise<JobPoolSnapshot | null>
     onProgress: (cb: (e: SyncProgressEvent) => void) => () => void
+    onRequestLog: (cb: (e: SyncHttpRequestEntry) => void) => () => void
+    onPoolSnapshot: (cb: (e: JobPoolSnapshot) => void) => () => void
   }
   favorites: {
     list: () => Promise<Favorite[]>
@@ -71,7 +102,9 @@ export interface RendererApi {
       targetType: FavoriteTargetType
       targetId: string
       note?: string
+      targetPrice?: number | null
     }) => Promise<Favorite>
+    update: (req: FavoriteUpdateRequest) => Promise<Favorite | null>
     remove: (req: { targetType: FavoriteTargetType; targetId: string }) => Promise<{ ok: boolean }>
   }
   recent: {
@@ -82,17 +115,35 @@ export interface RendererApi {
       titleSnapshot?: string
     }) => Promise<{ ok: boolean }>
   }
+  blocklist: {
+    list: () => Promise<BlockedTarget[]>
+    add: (req: {
+      targetType: BlockTargetType
+      targetId: string
+      titleSnapshot?: string | null
+    }) => Promise<BlockedTarget>
+    remove: (req: { targetType: BlockTargetType; targetId: string }) => Promise<{ ok: boolean }>
+    clear: () => Promise<{ deleted: number }>
+  }
   settings: {
     get: () => Promise<AppSettings>
     set: (p: Partial<AppSettings>) => Promise<AppSettings>
   }
+  data: {
+    /** Clear merchants / products / favorites / history / blocklist etc. Keeps settings. */
+    clearAll: () => Promise<{ ok: true; total: number; deleted: Record<string, number> }>
+  }
   shell: {
-    openExternal: (
-      url: string,
-      opts?: { confirmed?: boolean }
-    ) => Promise<{ ok: boolean; needsConfirm?: boolean; host?: string }>
+    openExternal: (url: string) => Promise<{ ok: boolean }>
   }
   diagnostics: {
     get: () => Promise<Record<string, unknown>>
+  }
+  window: {
+    minimize: () => Promise<void>
+    maximizeToggle: () => Promise<void>
+    close: () => Promise<void>
+    isMaximized: () => Promise<boolean>
+    onMaximized: (cb: (maximized: boolean) => void) => () => void
   }
 }

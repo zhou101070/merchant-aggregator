@@ -2,54 +2,26 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Merchant } from '@shared/types/merchant'
 import type { ShopProduct } from '@shared/types/product'
-import {
-  Badge,
-  Button,
-  Chip,
-  Empty,
-  IconButton,
-  Input,
-  Price,
-  SkeletonRows,
-  StatusDot
-} from '../components/ui'
+import { Badge, Button, Empty, Input, SkeletonRows, StatusDot } from '../components/ui'
+import { FilterBar, PageHeader } from '../components/layout'
+import { HealthStatus } from '../components/health-status'
 import { Select } from '../components/select'
-import { Icon } from '../components/icons'
+import { MerchantDetailDialog } from '../components/merchant-detail-dialog'
 import { useConfirm } from '../components/use-confirm'
 import { useToast } from '../components/use-toast'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useRefreshStock } from '../hooks/useRefreshStock'
 import { useSyncStatus } from '../hooks/useSync'
+import { DUJIAO_PLATFORM_ID, YICIYUAN_PLATFORM_ID } from '@shared/platforms/identify'
 import { SHOP_PLATFORM_OTHER, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { shopAllSpec } from '../lib/confirm-sync'
-import { openExternalSafe } from '../lib/open-external'
+import {
+  canSyncShopProducts,
+  resolveShopIdentity,
+  resolveShopSyncStartRef
+} from '../lib/shop-ref'
 import { formatSyncProgress } from '../lib/sync-labels'
 import { timeAgo } from '../lib/format-time'
-
-function healthTone(h: string | null): 'ok' | 'fail' | 'warn' | 'default' {
-  if (h === 'healthy') return 'ok'
-  if (h === 'failing') return 'fail'
-  if (h === 'retrying') return 'warn'
-  if (h === 'never') return 'warn'
-  return 'default'
-}
-
-function healthLabel(h: string | null | undefined): string {
-  switch (h) {
-    case 'healthy':
-      return '健康'
-    case 'failing':
-      return '异常'
-    case 'retrying':
-      return '同步中'
-    case 'never':
-      return '未同步'
-    case 'n/a':
-      return '不适用'
-    case 'unknown':
-      return '未知'
-    default:
-      return h?.trim() ? h : '未同步'
-  }
-}
 
 /** 同名店消歧：优先 host / sourceId，否则品牌 + id 短尾 */
 function merchantSubline(m: Merchant): string {
@@ -67,17 +39,17 @@ export function MerchantsPage(): React.JSX.Element {
     status,
     progress,
     startMerchants,
-    startLdxpSelected,
-    startLdxpAll,
+    startShopSelected,
+    startShopAll,
     start,
     cancelRunning,
-    busy,
-    error
+    busy
   } = useSyncStatus()
   const confirm = useConfirm()
   const toast = useToast()
+  const { refreshingStockId, refreshStock } = useRefreshStock()
   const [q, setQ] = useState('')
-  const [debouncedQ, setDebouncedQ] = useState('')
+  const [debouncedQ] = useDebouncedValue(q.trim(), 250)
   const [rows, setRows] = useState<Merchant[]>([])
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState<Merchant | null>(null)
@@ -90,15 +62,8 @@ export function MerchantsPage(): React.JSX.Element {
     rows: ShopProduct[]
   } | null>(null)
   const [loading, setLoading] = useState(false)
-  const [scrapableOnly, setScrapableOnly] = useState(false)
-  const [withoutShopProducts, setWithoutShopProducts] = useState(false)
   const [healthFilter, setHealthFilter] = useState<string>('all')
   const [platformFilter, setPlatformFilter] = useState<string>('all')
-
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQ(q.trim()), 250)
-    return () => clearTimeout(t)
-  }, [q])
 
   // 深链：/merchants?id=xxx 直达商家详情(收藏 / 最近浏览跳入)
   useEffect(() => {
@@ -124,8 +89,6 @@ export function MerchantsPage(): React.JSX.Element {
     try {
       const res = await window.api.merchants.list({
         q: debouncedQ || undefined,
-        scrapableOnly: scrapableOnly || withoutShopProducts || undefined,
-        withoutShopProducts: withoutShopProducts || undefined,
         health: healthFilter === 'all' ? undefined : [healthFilter],
         shopPlatforms: platformFilter === 'all' ? undefined : [platformFilter],
         offset: 0,
@@ -143,11 +106,24 @@ export function MerchantsPage(): React.JSX.Element {
     } finally {
       setLoading(false)
     }
-  }, [debouncedQ, selectedId, scrapableOnly, withoutShopProducts, healthFilter, platformFilter])
+  }, [debouncedQ, selectedId, healthFilter, platformFilter])
+
+  // Mid-batch shop sync keeps progress.status=running; advance current/message after each shop
+  const shopSyncTick =
+    progress &&
+    (progress.jobType === 'shop_one' ||
+      progress.jobType === 'shop_selected' ||
+      progress.jobType === 'shop_all' ||
+      progress.jobType === 'bootstrap' ||
+      progress.jobType === 'ldxp_shop' ||
+      progress.jobType === 'ldxp_selected' ||
+      progress.jobType === 'ldxp_all')
+      ? `${progress.jobId}:${progress.status}:${progress.current}:${progress.phase === 'shop' ? progress.message ?? '' : progress.phase}`
+      : `${progress?.jobId ?? ''}:${progress?.status ?? ''}`
 
   useEffect(() => {
     void load()
-  }, [load, status?.counts.merchants, progress?.status])
+  }, [load, status?.counts.merchants, status?.counts.shopProducts, shopSyncTick])
 
   useEffect(() => {
     if (!selected) return
@@ -165,12 +141,31 @@ export function MerchantsPage(): React.JSX.Element {
     return () => {
       alive = false
     }
-  }, [selected, status?.counts.shopProducts, progress?.status])
+  }, [selected, status?.counts.shopProducts, shopSyncTick])
   const shopProducts = selected && shopProductsFor?.id === selected.id ? shopProductsFor.rows : []
 
-  /** Aligned with SCRAPABLE_SQL: shop_platform + shop_token (mapRow dual-fills from ldxp). */
-  const scrapable = (m: { shopPlatform?: string | null; shopToken?: string | null }): boolean =>
-    !!(m.shopPlatform && m.shopToken)
+  function refreshProductStock(p: ShopProduct): void {
+    void refreshStock(p.id, {
+      onUpdated: (res) =>
+        setShopProductsFor((prev) =>
+          prev && prev.id === selected?.id
+            ? {
+                id: prev.id,
+                rows: prev.rows.map((row) => (row.id === p.id ? res.product : row))
+              }
+            : prev
+        ),
+      onRemoved: () =>
+        setShopProductsFor((prev) =>
+          prev && prev.id === selected?.id
+            ? { id: prev.id, rows: prev.rows.filter((row) => row.id !== p.id) }
+            : prev
+        )
+    })
+  }
+
+  /** Known scrapable or unknown-platform trial (host / token present). */
+  const scrapable = (m: Merchant): boolean => canSyncShopProducts(m)
   const ldxpRows = useMemo(() => rows.filter((m) => scrapable(m)), [rows])
   const checkedLdxp = useMemo(
     () => [...checked].filter((id) => rows.some((m) => m.id === id && scrapable(m))),
@@ -198,7 +193,7 @@ export function MerchantsPage(): React.JSX.Element {
   async function syncAll(): Promise<void> {
     const n = status?.counts.scrapableMerchants ?? status?.counts.ldxpMerchants ?? ldxpRows.length
     if (!(await confirm(shopAllSpec(n)))) return
-    void startLdxpAll()
+    void startShopAll()
     toast('已开始同步全部可刮店铺')
   }
 
@@ -210,19 +205,19 @@ export function MerchantsPage(): React.JSX.Element {
 
   return (
     <div className="stack page-viewport">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">商家</h1>
-          <div className="page-meta">
+      <PageHeader
+        title="商家"
+        meta={
+          <>
             本地 <span className="num">{status?.counts.merchants ?? total}</span> 家 · 可刮{' '}
             <span className="num">
               {status?.counts.scrapableMerchants ?? status?.counts.ldxpMerchants ?? 0}
             </span>{' '}
             · 店内商品 <span className="num">{status?.counts.shopProducts ?? 0}</span>
-          </div>
-        </div>
-        <div className="page-actions">
-          {busy ? (
+          </>
+        }
+        actions={
+          busy ? (
             <Button onClick={() => void cancelRunning()}>
               <span className="spin" aria-hidden="true" />
               取消同步
@@ -233,7 +228,7 @@ export function MerchantsPage(): React.JSX.Element {
               <Button
                 disabled={!checkedLdxp.length}
                 onClick={() => {
-                  void startLdxpSelected(checkedLdxp)
+                  void startShopSelected(checkedLdxp)
                   toast(`已开始同步所选 ${checkedLdxp.length} 家店`)
                 }}
               >
@@ -243,45 +238,26 @@ export function MerchantsPage(): React.JSX.Element {
                 同步全部可刮店铺
               </Button>
             </>
-          )}
-        </div>
-      </div>
+          )
+        }
+      />
 
-      <div className="filter-bar">
+      <FilterBar>
         <Input
           placeholder="搜索店名 / host"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           style={{ width: 220 }}
         />
-        <Chip on={scrapableOnly} onClick={() => setScrapableOnly((v) => !v)}>
-          仅可深刮
-        </Chip>
-        <Chip
-          on={withoutShopProducts}
-          onClick={() => {
-            setWithoutShopProducts((v) => {
-              if (!v) setScrapableOnly(true)
-              return !v
-            })
-          }}
-        >
-          尚未同步商品
-        </Chip>
         <Select
           value={platformFilter}
-          onValueChange={(v) => {
-            setPlatformFilter(v)
-            // 「其他」= 未注册 scrapable 平台，几乎都不可深刮；与「仅可深刮」并用必为空
-            if (v === SHOP_PLATFORM_OTHER) {
-              setScrapableOnly(false)
-              setWithoutShopProducts(false)
-            }
-          }}
+          onValueChange={setPlatformFilter}
           ariaLabel="平台筛选"
           options={[
             { value: 'all', label: '全部平台' },
             ...SHOP_PROFILES.map((p) => ({ value: p.id, label: p.displayName })),
+            { value: DUJIAO_PLATFORM_ID, label: '独角数卡' },
+            { value: YICIYUAN_PLATFORM_ID, label: '异次元发卡' },
             { value: SHOP_PLATFORM_OTHER, label: '其他' }
           ]}
         />
@@ -301,13 +277,8 @@ export function MerchantsPage(): React.JSX.Element {
         <span className="faint small">
           筛选结果 <span className="num">{total}</span> 家 · 勾选仅对可深刮店生效
         </span>
-      </div>
+      </FilterBar>
 
-      {error ? (
-        <div className="panel" style={{ padding: '10px 14px' }}>
-          <StatusDot tone="fail">{error}</StatusDot>
-        </div>
-      ) : null}
       {busy ? (
         <div className="panel" style={{ padding: '10px 14px' }}>
           <StatusDot tone="warn">
@@ -324,29 +295,19 @@ export function MerchantsPage(): React.JSX.Element {
         <div className="panel">
           <Empty
             title={
-              platformFilter !== 'all' ||
-              scrapableOnly ||
-              withoutShopProducts ||
-              healthFilter !== 'all' ||
-              debouncedQ
+              platformFilter !== 'all' || healthFilter !== 'all' || debouncedQ
                 ? '没有匹配的商家'
                 : '还没有商家数据'
             }
             actions={
-              platformFilter === 'all' &&
-              !scrapableOnly &&
-              !withoutShopProducts &&
-              healthFilter === 'all' &&
-              !debouncedQ ? (
+              platformFilter === 'all' && healthFilter === 'all' && !debouncedQ ? (
                 <Button variant="primary" onClick={() => void startMerchants()} disabled={busy}>
-                  从 PriceAI 同步商家
+                  同步商家列表
                 </Button>
               ) : (
                 <Button
                   onClick={() => {
                     setPlatformFilter('all')
-                    setScrapableOnly(false)
-                    setWithoutShopProducts(false)
                     setHealthFilter('all')
                     setQ('')
                   }}
@@ -357,18 +318,14 @@ export function MerchantsPage(): React.JSX.Element {
             }
           >
             {platformFilter === SHOP_PLATFORM_OTHER
-              ? '「其他」为非链动/catfk 等未注册发卡站；不要与「仅可深刮」同时开启。'
-              : platformFilter !== 'all' ||
-                  scrapableOnly ||
-                  withoutShopProducts ||
-                  healthFilter !== 'all' ||
-                  debouncedQ
-                ? '试试放宽平台、健康状态或可深刮条件。'
-                : '商家主档来自 PriceAI，只需同步一次，之后按需更新。'}
+              ? '「其他」为非链动/catfk 等未注册发卡站。'
+              : platformFilter !== 'all' || healthFilter !== 'all' || debouncedQ
+                ? '试试放宽平台或健康状态筛选。'
+                : '商家列表来自 PriceAI / NodeBits；店内商品走全局深刮。列表同步一次即可，之后按需更新。'}
           </Empty>
         </div>
       ) : (
-        <div className={`panel panel-fill ${selected ? 'split' : ''}`}>
+        <div className="panel panel-fill">
           <div className="list-side">
             <table className="table">
               <thead>
@@ -384,6 +341,7 @@ export function MerchantsPage(): React.JSX.Element {
                     />
                   </th>
                   <th>店名</th>
+                  <th>类型</th>
                   <th>同步状态</th>
                   <th className="num">本地商品</th>
                   <th className="col-host">host</th>
@@ -419,9 +377,17 @@ export function MerchantsPage(): React.JSX.Element {
                         </div>
                       </td>
                       <td className="nowrap">
-                        <StatusDot tone={healthTone(m.healthStatus)}>
-                          {healthLabel(m.healthStatus)}
-                        </StatusDot>
+                        {(() => {
+                          const id = resolveShopIdentity(m)
+                          return (
+                            <span title={id.reason}>
+                              <Badge tone={id.scrapable ? 'ok' : 'default'}>{id.label}</Badge>
+                            </span>
+                          )
+                        })()}
+                      </td>
+                      <td className="nowrap">
+                        <HealthStatus health={m.healthStatus} />
                         {m.healthCheckedAt ? (
                           <span className="faint small"> · {timeAgo(m.healthCheckedAt)}</span>
                         ) : null}
@@ -436,136 +402,31 @@ export function MerchantsPage(): React.JSX.Element {
               </tbody>
             </table>
           </div>
-
-          {selected ? (
-            <div className="detail-pane">
-              <div className="row between" style={{ alignItems: 'flex-start', flexWrap: 'nowrap' }}>
-                <div style={{ minWidth: 0 }}>
-                  <h2 className="detail-title">{selected.name}</h2>
-                  <div className="detail-id">{selected.id}</div>
-                </div>
-                <IconButton label="关闭详情" onClick={() => selectMerchant(null)}>
-                  <Icon name="close" />
-                </IconButton>
-              </div>
-
-              <div className="row">
-                <StatusDot tone={healthTone(selected.healthStatus)}>
-                  同步：{healthLabel(selected.healthStatus)}
-                </StatusDot>
-                {selected.upstreamHealth ? <Badge>上游：{selected.upstreamHealth}</Badge> : null}
-                {selected.shopToken || selected.ldxpToken ? (
-                  <span className="mono faint">
-                    {selected.shopPlatform || 'ldxp'}:{selected.shopToken || selected.ldxpToken}
-                  </span>
-                ) : null}
-              </div>
-
-              {selected.healthMessage ? (
-                <div className="small muted">
-                  {selected.healthMessage}
-                  {selected.healthCheckedAt ? ` · ${timeAgo(selected.healthCheckedAt)}` : ''}
-                </div>
-              ) : selected.healthCheckedAt ? (
-                <div className="small muted">上次同步：{timeAgo(selected.healthCheckedAt)}</div>
-              ) : null}
-
-              <div className="tag-line">
-                平台：{selected.platforms.join(' · ') || '—'}
-                <br />
-                店内商品（本地）：<span className="num">{shopProducts.length}</span>
-              </div>
-
-              <div className="row">
-                <Button
-                  variant="primary"
-                  onClick={() => void openExternalSafe(selected.shopUrl ?? selected.entryUrl)}
-                >
-                  <Icon name="external" size={14} />
-                  打开店铺
-                </Button>
-                {scrapable(selected) ? (
-                  <Button
-                    disabled={busy}
-                    onClick={() => {
-                      void start('shop_one', {
-                        merchantId: selected.id,
-                        platformId: selected.shopPlatform || 'ldxp',
-                        token: selected.shopToken || selected.ldxpToken || undefined
-                      })
-                      toast(`已开始同步：${selected.name}`)
-                    }}
-                  >
-                    <Icon name="refresh" size={14} />
-                    同步该店商品
-                  </Button>
-                ) : null}
-                <Button onClick={() => favoriteMerchant(selected)}>
-                  <Icon name="bookmark" size={14} />
-                  收藏
-                </Button>
-              </div>
-              {!scrapable(selected) ? (
-                <div className="faint small">
-                  该店无可刮店铺信息：只能打开外链，无法同步店内价。
-                </div>
-              ) : null}
-
-              <div className="panel detail-products" style={{ boxShadow: 'none' }}>
-                <div className="panel-head">
-                  <strong>店内商品</strong>
-                  <span className="sub">
-                    {shopProducts.length ? `${shopProducts.length} 条` : ''}
-                  </span>
-                </div>
-                {!shopProducts.length ? (
-                  <Empty title="该店尚未同步商品">
-                    {scrapable(selected)
-                      ? '点上方「同步该店商品」拉取店内价格。'
-                      : '该店不支持同步店内价。'}
-                  </Empty>
-                ) : (
-                  <div>
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th className="col-title">商品</th>
-                          <th className="num col-price">价格</th>
-                          <th className="num col-stock">库存</th>
-                          <th className="col-actions"></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {shopProducts.map((p) => (
-                          <tr key={p.id}>
-                            <td className="col-title">
-                              <div className="ellipsis" title={p.title}>
-                                {p.title}
-                              </div>
-                            </td>
-                            <td className="num col-price">
-                              <Price price={p.price} currency={p.currency} />
-                            </td>
-                            <td className="num mono col-stock">{p.stock ?? '—'}</td>
-                            <td className="col-actions">
-                              <IconButton
-                                label="打开源站"
-                                onClick={() => void openExternalSafe(p.sourceUrl)}
-                              >
-                                <Icon name="external" size={14} />
-                              </IconButton>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : null}
         </div>
       )}
+
+      {selected ? (
+        <MerchantDetailDialog
+          merchant={selected}
+          shopProducts={shopProducts}
+          busy={busy}
+          refreshingStockId={refreshingStockId}
+          onClose={() => selectMerchant(null)}
+          onSyncShop={(m) => {
+            const r = resolveShopSyncStartRef({ ...m, merchantId: m.id })
+            if (!r) return
+            void start('shop_one', {
+              merchantId: m.id,
+              platformId: r.platformId,
+              token: r.token
+            })
+            toast(`已开始同步：${m.name}`)
+          }}
+          onFavorite={favoriteMerchant}
+          onRefreshStock={refreshProductStock}
+          onBlockStateChange={() => void load()}
+        />
+      ) : null}
     </div>
   )
 }

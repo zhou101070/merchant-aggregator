@@ -32,13 +32,19 @@ export interface SearchHit {
 export interface SearchQuery {
   q: string
   kinds?: SearchHitKind[]
+  /**
+   * When true (default), only rows with stock > 0.
+   * Set false to include OOS / null stock; OOS is stored on sync.
+   */
   inStockOnly?: boolean
   priceMin?: number
   priceMax?: number
   /** Exact merchant display name filter (from facets) */
   merchantName?: string
   titleContains?: string[]
-  sort?: 'score' | 'price'
+  /** 标题排除词(AND NOT LIKE) */
+  titleExcludes?: string[]
+  sort?: 'score' | 'price' | 'stock' | 'fetchedAt' | 'merchant' | 'title'
   sortDir?: 'asc' | 'desc'
   limit?: number
   offset?: number

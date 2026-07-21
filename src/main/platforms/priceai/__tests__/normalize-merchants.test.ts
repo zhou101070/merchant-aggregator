@@ -4,12 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { openDatabase, closeDatabase } from '../../../db/connection'
 import { MerchantsRepo } from '../../../db/repositories/merchants-repo'
-import {
-  normalizeMerchant,
-  deriveLdxpToken,
-  deriveShopRef,
-  hasMerchantExternalLink
-} from '../normalize'
+import { normalizeMerchant, deriveShopRef, hasMerchantExternalLink } from '../normalize'
 import { priceaiMerchantsPageSchema } from '../zod'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -22,22 +17,31 @@ describe('priceai merchants normalize', () => {
     expect(parsed.degraded).toBe(false)
   })
 
-  it('derives ldxp token from shop url', () => {
+  it('accepts live payload that omits degraded (defaults false)', () => {
+    const { degraded: _omit, ...withoutDegraded } = fixture as {
+      degraded?: boolean
+      [k: string]: unknown
+    }
+    void _omit
+    const parsed = priceaiMerchantsPageSchema.parse(withoutDegraded)
+    expect(parsed.degraded).toBe(false)
+    expect(parsed.rows).toHaveLength(2)
+  })
+
+  it('derives ldxp shop ref from shop url', () => {
     expect(
-      deriveLdxpToken({
+      deriveShopRef({
         host: 'pay.ldxp.cn',
         shopUrl: 'https://pay.ldxp.cn/shop/PAXOVOVJ'
       })
-    ).toBe('PAXOVOVJ')
+    ).toMatchObject({
+      shop_platform: 'ldxp',
+      shop_token: 'PAXOVOVJ',
+      ldxp_token: 'PAXOVOVJ'
+    })
   })
 
   it('does not write catfk token into ldxp_token (wrong-platform bugfix)', () => {
-    expect(
-      deriveLdxpToken({
-        host: 'catfk.com',
-        shopUrl: 'https://catfk.com/shop/hththt'
-      })
-    ).toBeNull()
     const ref = deriveShopRef({
       host: 'catfk.com',
       shopUrl: 'https://catfk.com/shop/hththt'
@@ -47,6 +51,52 @@ describe('priceai merchants normalize', () => {
       shop_token: 'hththt',
       ldxp_token: null
     })
+  })
+
+  it('derives dujiao shop ref from collector_kind + host', () => {
+    expect(
+      deriveShopRef({
+        host: 'flyai.qzz.io',
+        entryUrl: 'https://flyai.qzz.io/',
+        collectorKind: 'dujiao'
+      })
+    ).toMatchObject({
+      shop_platform: 'dujiao',
+      shop_token: 'flyai.qzz.io',
+      ldxp_token: null
+    })
+  })
+
+  it('does not invent dujiao ref without host', () => {
+    expect(deriveShopRef({ collectorKind: 'dujiao' })).toBeNull()
+  })
+
+  it('does not derive yiciyuan ref from soft kami without path fingerprint', () => {
+    expect(
+      deriveShopRef({
+        host: 'web3chirou.com',
+        entryUrl: 'https://web3chirou.com/',
+        collectorKind: 'kami'
+      })
+    ).toBeNull()
+  })
+
+  it('derives yiciyuan ref from kami + /item/ path hint', () => {
+    expect(
+      deriveShopRef({
+        host: 'wiki123.top',
+        entryUrl: 'https://wiki123.top/item/8',
+        collectorKind: 'kami'
+      })
+    ).toMatchObject({
+      shop_platform: 'yiciyuan',
+      shop_token: 'wiki123.top',
+      ldxp_token: null
+    })
+  })
+
+  it('does not invent yiciyuan ref without host', () => {
+    expect(deriveShopRef({ collectorKind: 'kami' })).toBeNull()
   })
 
   it('maps API fields to db row + name_norm', () => {
