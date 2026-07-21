@@ -5,6 +5,7 @@ import {
   isDurationToken,
   isLetterVersionGroup,
   isLetterVersionToken,
+  isPureLatinWord,
   isVersionTailToken,
   likeContains,
   likeTokenBoundary,
@@ -127,6 +128,16 @@ describe('escapeLike / likeContains', () => {
 })
 
 describe('version tail helpers', () => {
+  it('detects pure Latin words (whole-word recall path)', () => {
+    expect(isPureLatinWord('team')).toBe(true)
+    expect(isPureLatinWord('pro')).toBe(true)
+    expect(isPureLatinWord('claude')).toBe(true)
+    expect(isPureLatinWord('k12')).toBe(false)
+    expect(isPureLatinWord('claude.ai')).toBe(false)
+    expect(isPureLatinWord('7')).toBe(false)
+    expect(isPureLatinWord('团队')).toBe(false)
+  })
+
   it('detects version tails', () => {
     expect(isVersionTailToken('7')).toBe(true)
     expect(isVersionTailToken('4o')).toBe(true)

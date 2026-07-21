@@ -7,16 +7,12 @@ import {
   compareRelevance,
   computeIdfFromRows,
   expandTokenGroups,
+  groupMatchesRecall,
   scoreShopRank,
   type RankContext,
   type RankRow
 } from './search-rank'
 import type { ShopProduct } from '../types/product'
-
-function fieldHasAny(fieldN: string, group: string[]): boolean {
-  if (!fieldN || !group.length) return false
-  return group.some((g) => g && fieldN.includes(g))
-}
 
 function productFields(p: ShopProduct): { titleN: string; catN: string; typeN: string; shopN: string } {
   return {
@@ -55,13 +51,7 @@ export function shopProductMatchesQuery(p: ShopProduct, rawQ: string): boolean {
     )
   }
 
-  return groups.every(
-    (g) =>
-      fieldHasAny(titleN, g) ||
-      fieldHasAny(catN, g) ||
-      fieldHasAny(typeN, g) ||
-      fieldHasAny(shopN, g)
-  )
+  return groups.every((g) => groupMatchesRecall({ titleN, catN, typeN, shopN }, g))
 }
 
 /** Filter then rank with homepage scoreShopRank / compareRelevance. */

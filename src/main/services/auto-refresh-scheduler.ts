@@ -37,6 +37,8 @@ export class AutoRefreshScheduler {
   private readonly lastAtMs = new Map<string, number>()
   private readonly lastMerchantId = new Map<string, string>()
   private readonly lastResult = new Map<string, string>()
+  /** One in-flight auto job per platform; platforms stay independent/parallel. */
+  private readonly activeJobByPlatform = new Map<string, string>()
   private running = false
 
   constructor(
@@ -158,6 +160,13 @@ export class AutoRefreshScheduler {
       return
     }
 
+    const prevJobId = this.activeJobByPlatform.get(platformId)
+    if (prevJobId && this.sync.isJobRunning(prevJobId)) {
+      this.lastResult.set(platformId, 'in_flight')
+      log.debug('platform job still running, skip', { platformId, jobId: prevJobId })
+      return
+    }
+
     const pool = this.repos.merchants.listScrapableNeedingSync({
       freshHours: settings.shopFreshHours,
       platformIds: [platformId],
@@ -180,9 +189,10 @@ export class AutoRefreshScheduler {
         merchantId: pick.id,
         platformId: pick.shopPlatform,
         token: pick.shopToken,
-        // 不打开系统浏览器；失败标 failing 后本池会排除
+        // 不打开系统浏览器；失败标 failing 后本池会排除；不占前台 lane
         background: true
       })
+      this.activeJobByPlatform.set(platformId, jobId)
       this.lastResult.set(platformId, `started:${jobId.slice(0, 8)}`)
       log.info('auto shop_one', {
         platformId,
@@ -192,6 +202,7 @@ export class AutoRefreshScheduler {
       })
     } catch (err) {
       if (err instanceof AppError && err.code === 'SYNC_LOCKED') {
+        // Foreground bulk jobs no longer block background; keep for safety
         this.lastResult.set(platformId, 'sync_locked')
         log.debug('lane busy, skip', { platformId })
         return

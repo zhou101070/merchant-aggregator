@@ -57,11 +57,23 @@ export function enterSyncRequestScope(jobId: string): void {
   primaryJobId = jobId
 }
 
+/** Mark in-flight rows as ended so the UI does not stick on「连接中」. */
+function settlePendingRequests(reason: string): void {
+  for (const entry of entries) {
+    if (entry.phase !== 'pending') continue
+    endSyncHttpRequest(entry.id, { status: null, error: reason })
+  }
+}
+
 /** Call when a sync job finishes (success/fail/cancel). */
 export function leaveSyncRequestScope(jobId: string): void {
   activeJobIds.delete(jobId)
   if (primaryJobId === jobId) {
     primaryJobId = activeJobIds.size ? [...activeJobIds][0]! : null
+  }
+  // When no job is still scoped, close orphans (cancel / hang / race).
+  if (activeJobIds.size === 0) {
+    settlePendingRequests('请求未完成')
   }
 }
 

@@ -1,3 +1,4 @@
+import { RATE_LIMITS } from '@shared/constants'
 import { sleep } from '../services/rate-limiter'
 import { beginSyncHttpRequest, endSyncHttpRequest } from '../services/sync-request-log'
 import { createLogger } from './logger'
@@ -47,7 +48,10 @@ function envProxyRules(): string | null {
  * Apply proxy ONLY to this app's Electron session.defaultSession.
  * Never writes OS / system proxy settings; other apps are unaffected.
  * - MA_PROXY / HTTP(S)_PROXY → fixed_servers
- * - otherwise → direct (do not follow OS proxy either)
+ * - otherwise → system (follow OS proxy, same path as browser)
+ *
+ * Forced `direct` used to leave shops reachable in browser (via Clash etc.)
+ * hanging forever in-app with no timeout.
  */
 export async function ensureSystemProxy(): Promise<void> {
   if (proxyInit) return proxyInit
@@ -61,8 +65,8 @@ export async function ensureSystemProxy(): Promise<void> {
         await ses.setProxy({ mode: 'fixed_servers', proxyRules: fixed })
         log.info('app session proxy fixed_servers (not OS)', { proxyRules: fixed })
       } else {
-        await ses.setProxy({ mode: 'direct' })
-        log.info('app session proxy mode=direct (not OS)')
+        await ses.setProxy({ mode: 'system' })
+        log.info('app session proxy mode=system (follow OS; not writing OS)')
       }
     } catch (err) {
       log.warn('ensureSystemProxy failed', { err: String(err) })
@@ -202,6 +206,43 @@ function withAbortSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<
   })
 }
 
+/** Combine caller cancel + per-request timeout (AbortSignal.any when available). */
+export function mergeAbortSignals(
+  ...signals: Array<AbortSignal | null | undefined>
+): AbortSignal | undefined {
+  const list = signals.filter((s): s is AbortSignal => s != null)
+  if (list.length === 0) return undefined
+  if (list.length === 1) return list[0]
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any(list)
+  }
+  const controller = new AbortController()
+  const onAbort = (): void => {
+    controller.abort()
+  }
+  for (const s of list) {
+    if (s.aborted) {
+      controller.abort()
+      return controller.signal
+    }
+    s.addEventListener('abort', onAbort, { once: true })
+  }
+  return controller.signal
+}
+
+function withDefaultTimeout(
+  init: RequestInit | undefined,
+  timeoutMs: number
+): { init: RequestInit; clear: () => void } {
+  const timeoutController = new AbortController()
+  const timer = setTimeout(() => timeoutController.abort(), timeoutMs)
+  const signal = mergeAbortSignals(init?.signal, timeoutController.signal)
+  return {
+    init: { ...init, signal },
+    clear: () => clearTimeout(timer)
+  }
+}
+
 /**
  * True for short-lived socket/TLS drops worth a quick retry
  * (e.g. Chromium net_error -100 CONNECTION_CLOSED during SSL handshake).
@@ -257,6 +298,7 @@ async function withTransientRetries<T>(
 
 /**
  * Main-process HTTP via Chromium network (system/fixed proxy).
+ * Always applies a default request timeout so sync UI never stays on「连接中」forever.
  * Does not fall back to bare Node fetch after a Chromium failure (that hits fake-ip).
  */
 export async function mainFetch(input: string | URL, init?: RequestInit): Promise<Response> {
@@ -264,8 +306,9 @@ export async function mainFetch(input: string | URL, init?: RequestInit): Promis
   const url = String(input)
   const method = (init?.method || 'GET').toUpperCase()
   const logId = beginSyncHttpRequest({ method, url })
+  const timed = withDefaultTimeout(init, RATE_LIMITS.requestTimeoutMs)
   try {
-    const res = await mainFetchInner(url, init)
+    const res = await mainFetchInner(url, timed.init)
     endSyncHttpRequest(logId, { status: res.status })
     return res
   } catch (err) {
@@ -274,6 +317,8 @@ export async function mainFetch(input: string | URL, init?: RequestInit): Promis
       error: err instanceof Error ? err.message : String(err)
     })
     throw err
+  } finally {
+    timed.clear()
   }
 }
 
@@ -330,7 +375,7 @@ async function mainFetchInner(url: string, init?: RequestInit): Promise<Response
         )
         try {
           await setProxy({
-            mode: fromEnv ? 'fixed_servers' : 'direct',
+            mode: fromEnv ? 'fixed_servers' : 'system',
             proxyRules: fromEnv || undefined
           })
         } catch {

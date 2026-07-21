@@ -18,6 +18,14 @@ export function isVersionTailToken(token: string): boolean {
 }
 
 /**
+ * Pure Latin word (team / pro / claude) — match as whole word, not substring.
+ * Excludes letter+version codes (k12) and dotted forms (claude.ai).
+ */
+export function isPureLatinWord(token: string): boolean {
+  return /^[a-z]+$/i.test(token)
+}
+
+/**
  * Compact letter+version product code (k12, grok7, gpt4o).
  * Used to tighten SQL recall: whole-token title match, not category substring.
  */

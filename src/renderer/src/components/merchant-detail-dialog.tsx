@@ -12,7 +12,12 @@ import { useRefreshStock } from '../hooks/useRefreshStock'
 import { useSyncStatus } from '../hooks/useSync'
 import { openExternalSafe } from '../lib/open-external'
 import { merchantStoreUrl } from '../lib/shop-url'
-import { resolveShopIdentity, resolveShopRef } from '../lib/shop-ref'
+import {
+  canSyncShopProducts,
+  canTrialUnknownShopSync,
+  resolveShopIdentity,
+  resolveShopSyncStartRef
+} from '../lib/shop-ref'
 import { timeAgo } from '../lib/format-time'
 import { filterAndRankShopProducts } from '@shared/lib/shop-product-match'
 
@@ -102,6 +107,8 @@ function MerchantDetailBody({
   const dismiss = useModalDismiss()
   const toast = useToast()
   const identity = resolveShopIdentity(merchant)
+  const canSync = canSyncShopProducts(merchant)
+  const trialSync = canTrialUnknownShopSync(merchant)
   const [blocked, setBlocked] = useState(false)
   const [blockBusy, setBlockBusy] = useState(false)
   const [groupFilter, setGroupFilter] = useState<string>('all')
@@ -218,7 +225,7 @@ function MerchantDetailBody({
           <Icon name="external" size={14} />
           打开店铺
         </Button>
-        {identity.scrapable ? (
+        {canSync ? (
           <Button disabled={busy} onClick={() => onSyncShop(merchant)}>
             <Icon name="refresh" size={14} />
             同步该店商品
@@ -242,7 +249,12 @@ function MerchantDetailBody({
           {blocked ? '取消屏蔽' : '屏蔽商家'}
         </Button>
       </div>
-      {!identity.scrapable ? (
+      {!identity.scrapable && trialSync ? (
+        <div className="faint small" style={{ marginBottom: 12 }}>
+          未知平台：将依次尝试已有同步模式；全部失败时静默跳过，不加入屏蔽。
+        </div>
+      ) : null}
+      {!canSync ? (
         <div className="faint small" style={{ marginBottom: 12 }}>
           {identity.reason}。只能打开外链，无法同步店内价。
         </div>
@@ -287,8 +299,10 @@ function MerchantDetailBody({
         ) : null}
         {!shopProducts.length ? (
           <Empty title="该店尚未同步商品">
-            {identity.scrapable
-              ? '点上方「同步该店商品」拉取店内价格。'
+            {canSync
+              ? trialSync
+                ? '点上方「同步该店商品」尝试已有模式拉取店内价格。'
+                : '点上方「同步该店商品」拉取店内价格。'
               : '该店不支持同步店内价。'}
           </Empty>
         ) : !filteredProducts.length ? (
@@ -432,7 +446,7 @@ export function MerchantDetailById({
       refreshingStockId={refreshingStockId}
       onClose={onClose}
       onSyncShop={(m) => {
-        const r = resolveShopRef(m)
+        const r = resolveShopSyncStartRef({ ...m, merchantId: m.id })
         if (!r) return
         void start('shop_one', {
           merchantId: m.id,

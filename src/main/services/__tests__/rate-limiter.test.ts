@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  hostKey,
   IntervalLimiter,
+  mapWithConcurrency,
   pageStartGapMs,
+  PerHostIntervalLimiter,
   PerNodeIntervalLimiter,
+  resetHostLimiterForTests,
   resetShopNodeLimiterForTests,
   sleep
 } from '../rate-limiter'
@@ -63,9 +67,17 @@ describe('pageStartGapMs', () => {
   })
 })
 
-describe('PerNodeIntervalLimiter', () => {
-  it('lets different nodes start immediately', async () => {
-    const lim = new PerNodeIntervalLimiter(500)
+describe('hostKey', () => {
+  it('normalizes urls and bare hosts', () => {
+    expect(hostKey('https://pay.ldxp.cn/shop/ABC')).toBe('pay.ldxp.cn')
+    expect(hostKey('CATFK.COM')).toBe('catfk.com')
+    expect(hostKey(null)).toBe('*')
+  })
+})
+
+describe('PerHostIntervalLimiter', () => {
+  it('lets different hosts start immediately', async () => {
+    const lim = new PerHostIntervalLimiter(500)
     const start = Date.now()
     const keys = await Promise.all([
       lim.acquire(['a', 'b', 'c']),
@@ -77,16 +89,16 @@ describe('PerNodeIntervalLimiter', () => {
     expect(elapsed).toBeLessThan(80)
   })
 
-  it('spaces the same node by interval', async () => {
-    const lim = new PerNodeIntervalLimiter(100)
+  it('spaces the same host by interval', async () => {
+    const lim = new PerHostIntervalLimiter(100)
     const start = Date.now()
-    await lim.acquire(['only'])
-    await lim.acquire(['only'])
+    await lim.waitTurn('only.example')
+    await lim.waitTurn('only.example')
     expect(Date.now() - start).toBeGreaterThanOrEqual(70)
   })
 
-  it('pinned single key does not use other nodes', async () => {
-    const lim = new PerNodeIntervalLimiter(200)
+  it('pinned single key does not use other hosts', async () => {
+    const lim = new PerHostIntervalLimiter(200)
     await lim.acquire(['a'])
     const t0 = Date.now()
     // only 'a' offered — must wait even if b is free
@@ -94,10 +106,42 @@ describe('PerNodeIntervalLimiter', () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(150)
     expect(lim.peekNextAt('b')).toBe(0)
   })
+
+  it('aliases still work', async () => {
+    const lim = new PerNodeIntervalLimiter(50)
+    await lim.waitTurn('x')
+    resetShopNodeLimiterForTests()
+    resetHostLimiterForTests()
+  })
 })
 
-describe('getShopNodeLimiter singleton', () => {
-  it('resets for tests', () => {
-    resetShopNodeLimiterForTests()
+describe('mapWithConcurrency', () => {
+  it('preserves order and caps in-flight workers', async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    const out = await mapWithConcurrency([1, 2, 3, 4, 5], 2, async (n) => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await sleep(30)
+      inFlight -= 1
+      return n * 10
+    })
+    expect(out).toEqual([10, 20, 30, 40, 50])
+    expect(maxInFlight).toBeLessThanOrEqual(2)
+  })
+
+  it('aborts when signal fires', async () => {
+    const c = new AbortController()
+    const p = mapWithConcurrency(
+      [1, 2, 3],
+      1,
+      async () => {
+        await sleep(200, c.signal)
+        return 1
+      },
+      c.signal
+    )
+    c.abort()
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' })
   })
 })

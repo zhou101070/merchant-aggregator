@@ -37,24 +37,45 @@ describe('shopProductMatchesQuery', () => {
     expect(shopProductMatchesQuery(row, 'claude team')).toBe(false)
   })
 
+  it('Latin word whole-title match (team ≠ steam; category team ignored)', () => {
+    expect(shopProductMatchesQuery(p({ id: '1', title: 'ChatGPT Team 月卡' }), 'team')).toBe(true)
+    expect(shopProductMatchesQuery(p({ id: '2', title: 'ChatGPT 团队版' }), 'team')).toBe(true)
+    expect(shopProductMatchesQuery(p({ id: '3', title: 'Steam 成品号' }), 'team')).toBe(false)
+    expect(
+      shopProductMatchesQuery(
+        p({ id: '4', title: 'Codex 接码 美区', categoryName: 'GPT 反代用（team、k12）' }),
+        'team'
+      )
+    ).toBe(false)
+  })
+
   it('empty query matches all', () => {
     expect(shopProductMatchesQuery(p({ id: '1', title: 'x' }), '  ')).toBe(true)
   })
 })
 
 describe('filterAndRankShopProducts', () => {
-  it('ranks full phrase title above weaker multi-field hit', () => {
+  it('ranks full title phrase above partial title hit; drops category-only Latin', () => {
     const rows = [
       p({
-        id: 'weak',
+        id: 'weak-cat',
         title: 'Pro 成品号',
         categoryName: 'Claude 区',
+        price: 1,
+        stock: 5
+      }),
+      p({
+        id: 'weak-title',
+        title: 'Claude 成品号 Pro 备用',
+        categoryName: '其它',
         price: 1,
         stock: 5
       }),
       p({ id: 'strong', title: 'Claude Pro 月卡', categoryName: '其它', price: 99, stock: 5 })
     ]
     const out = filterAndRankShopProducts(rows, 'claude pro')
-    expect(out.map((r) => r.id)).toEqual(['strong', 'weak'])
+    // Latin words require title whole-word — category-only "Claude 区" is out
+    expect(out.map((r) => r.id)).toEqual(['strong', 'weak-title'])
+    expect(out.map((r) => r.id)).not.toContain('weak-cat')
   })
 })

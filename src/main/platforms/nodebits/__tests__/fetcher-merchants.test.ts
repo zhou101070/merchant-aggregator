@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fetchAllNodebitsMerchants } from '../fetcher-merchants'
 import type { NodebitsClient } from '../client'
-import type { NodebitsProductRaw, NodebitsShopRaw } from '../zod'
+import type { NodebitsShopRaw } from '../zod'
 import { NODEBITS_ID_PREFIX } from '../normalize'
 
 function shop(partial: Partial<NodebitsShopRaw> & Pick<NodebitsShopRaw, 'id' | 'name'>): NodebitsShopRaw {
@@ -23,171 +23,178 @@ function shop(partial: Partial<NodebitsShopRaw> & Pick<NodebitsShopRaw, 'id' | '
   }
 }
 
-function product(
-  partial: Partial<NodebitsProductRaw> & Pick<NodebitsProductRaw, 'id' | 'shop_id'>
-): NodebitsProductRaw {
-  return {
-    title: 'item',
-    normalized_title: 'item',
-    category: null,
-    price: 1,
-    currency: 'CNY',
-    product_url: null,
-    image_url: null,
-    stock_status: 'in_stock',
-    raw_text: null,
-    status: 'active',
-    last_seen_at: '2026-07-01T00:00:00.000Z',
-    created_at: null,
-    updated_at: null,
-    product_type: null,
-    product_type_name: null,
-    stock_count: 1,
-    shops: null,
-    store_name: null,
-    ...partial
-  }
-}
-
-function mockClient(opts: {
-  shops: NodebitsShopRaw[]
-  productsByOffset?: (params: {
-    limit: number
-    offset: number
-  }) => { products: NodebitsProductRaw[]; total: number }
-  products?: NodebitsProductRaw[]
-}): NodebitsClient {
-  const all = opts.products ?? []
+function mockClient(opts: { shops: NodebitsShopRaw[] }): NodebitsClient {
   return {
     fetchShops: vi.fn(async () => opts.shops),
-    fetchProductsPage: vi.fn(
-      opts.productsByOffset ??
-        (async ({ limit, offset }) => ({
-          products: all.slice(offset, offset + limit),
-          total: all.length
-        }))
-    )
+    fetchShopGoTarget: vi.fn(async () => null)
   } as unknown as NodebitsClient
 }
 
 describe('fetchAllNodebitsMerchants', () => {
-  it('paginates products, drops test/no-link shops, keeps enriched rows', async () => {
+  it('resolves shop URLs via /go, drops test/no-link, keeps rows', async () => {
     const shops = [
       shop({ id: 's-ldxp', name: '链动' }),
       shop({ id: 's-entry', name: '入口' }),
       shop({ id: 's-none', name: '无链' }),
       shop({ id: 's-test', name: '测试', is_test: true })
     ]
-    const products = [
-      product({
-        id: 'p1',
-        shop_id: 's-ldxp',
-        product_url: 'https://pay.ldxp.cn/shop/TOK12345/x',
-        raw_text: JSON.stringify({
-          shopUrl: 'https://pay.ldxp.cn/shop/TOK12345',
-          source: 'ldxp'
-        })
-      }),
-      product({
-        id: 'p2',
-        shop_id: 's-entry',
-        product_url: 'https://other.test/item/1'
-      }),
-      product({
-        id: 'p3',
-        shop_id: 's-none',
-        product_url: null
-      }),
-      product({
-        id: 'p4',
-        shop_id: 's-test',
-        product_url: 'https://pay.ldxp.cn/shop/TESTONLY',
-        raw_text: JSON.stringify({ shopUrl: 'https://pay.ldxp.cn/shop/TESTONLY', source: 'ldxp' })
-      })
-    ]
+    const client = mockClient({ shops })
+    const goMap: Record<string, string | null> = {
+      's-ldxp': 'https://pay.ldxp.cn/shop/TOK12345',
+      's-entry': 'https://other.test/item/1',
+      's-none': null
+    }
+    const resolveShopGo = vi.fn(async (id: string) => goMap[id] ?? null)
 
-    const client = mockClient({ shops, products })
     const result = await fetchAllNodebitsMerchants({
       client,
-      productLimit: 2,
-      intervalMs: 0
+      intervalMs: 0,
+      resolveShopGo,
+      resolveItem: async () => null
     })
 
     expect(client.fetchShops).toHaveBeenCalledTimes(1)
-    expect(client.fetchProductsPage).toHaveBeenCalledTimes(2)
+    expect(resolveShopGo).toHaveBeenCalledTimes(3) // non-test only
     expect(result.shopsFetched).toBe(4)
     expect(result.droppedTest).toBe(1)
+    expect(result.goResolved).toBe(2)
+    expect(result.goFailed).toBe(1)
     expect(result.droppedNoLink).toBe(1)
     expect(result.rows).toHaveLength(2)
-    expect(result.productsFetched).toBe(4)
-    expect(result.productPages).toBe(2)
 
     const ids = result.rows.map((r) => r.id).sort()
-    expect(ids).toEqual([
-      `${NODEBITS_ID_PREFIX}s-entry`,
-      `${NODEBITS_ID_PREFIX}s-ldxp`
-    ].sort())
+    expect(ids).toEqual(
+      [`${NODEBITS_ID_PREFIX}s-entry`, `${NODEBITS_ID_PREFIX}s-ldxp`].sort()
+    )
 
     const ldxp = result.rows.find((r) => r.id.endsWith('s-ldxp'))!
     expect(ldxp.shop_platform).toBe('ldxp')
     expect(ldxp.shop_token).toBe('TOK12345')
+    expect(ldxp.shop_url).toBe('https://pay.ldxp.cn/shop/TOK12345')
   })
 
-  it('continues when products incomplete (soft incomplete log path)', async () => {
-    const shops = [shop({ id: 's1', name: 'A' })]
-    const client = mockClient({
-      shops,
-      productsByOffset: async ({ offset }) => {
-        if (offset === 0) {
-          return {
-            products: [
-              product({
-                id: 'p1',
-                shop_id: 's1',
-                product_url: 'https://example.com/a'
-              })
-            ],
-            total: 5
-          }
+  it('resolves shopApi item go-target to shop home, drops on resolve miss', async () => {
+    const shops = [
+      shop({ id: 's-item-ok', name: '可解析' }),
+      shop({ id: 's-item-fail', name: '解析失败' })
+    ]
+    const client = mockClient({ shops })
+    const resolveShopGo = vi.fn(async (id: string) =>
+      id === 's-item-ok'
+        ? 'https://pay.ldxp.cn/item/5ozbbc'
+        : 'https://pay.ldxp.cn/item/dead'
+    )
+    const resolveItem = vi.fn(async (url: string) => {
+      if (url.includes('5ozbbc')) {
+        return {
+          shopUrl: 'https://pay.ldxp.cn/shop/PAXOVOVJ',
+          token: 'PAXOVOVJ',
+          platformId: 'ldxp'
         }
-        // short empty-ish tail: empty products while total claims more → break on empty
-        return { products: [], total: 5 }
       }
+      return null
     })
 
-    const result = await fetchAllNodebitsMerchants({ client, productLimit: 100, intervalMs: 0 })
+    const result = await fetchAllNodebitsMerchants({
+      client,
+      intervalMs: 0,
+      resolveShopGo,
+      resolveItem
+    })
+
     expect(result.rows).toHaveLength(1)
-    expect(result.productsFetched).toBe(1)
-    expect(result.productsTotal).toBe(5)
+    expect(result.resolvedFromItem).toBe(1)
+    expect(result.droppedItemUnresolved).toBe(1)
+    expect(result.droppedNoLink).toBe(1)
+    expect(result.rows[0]!.shop_token).toBe('PAXOVOVJ')
+    expect(result.rows[0]!.shop_url).toBe('https://pay.ldxp.cn/shop/PAXOVOVJ')
+    expect(resolveItem).toHaveBeenCalled()
   })
 
   it('aborts on signal before shops', async () => {
     const ac = new AbortController()
     ac.abort()
-    const client = mockClient({ shops: [], products: [] })
+    const client = mockClient({ shops: [] })
     await expect(
       fetchAllNodebitsMerchants({ client, intervalMs: 0, signal: ac.signal })
     ).rejects.toMatchObject({ code: 'CANCELLED' })
   })
 
-  it('reports progress phases', async () => {
+  it('reports progress phases including go + resolve', async () => {
     const shops = [shop({ id: 's1', name: 'A' })]
-    const products = [
-      product({
-        id: 'p1',
-        shop_id: 's1',
-        product_url: 'https://example.com/a'
-      })
-    ]
-    const client = mockClient({ shops, products })
+    const client = mockClient({ shops })
     const phases: string[] = []
     await fetchAllNodebitsMerchants({
       client,
       intervalMs: 0,
+      resolveShopGo: async () => 'https://example.com/a',
+      resolveItem: async () => null,
       onProgress: (p) => phases.push(p.phase)
     })
     expect(phases).toContain('shops')
-    expect(phases).toContain('products')
-    expect(phases).toContain('normalize')
+    expect(phases).toContain('go')
+    expect(phases).toContain('resolve')
+  })
+
+  it('streams onMerchantsReady per shop as soon as /go (+ item) finishes', async () => {
+    const shops = [
+      shop({ id: 's-a', name: 'A' }),
+      shop({ id: 's-b', name: 'B' }),
+      shop({ id: 's-none', name: 'None' })
+    ]
+    const client = mockClient({ shops })
+    const goMap: Record<string, string | null> = {
+      's-a': 'https://pay.ldxp.cn/shop/AAAAAAA1',
+      's-b': 'https://pay.ldxp.cn/shop/BBBBBBB2',
+      's-none': null
+    }
+    // Serialize go so flush order is deterministic
+    let gate = Promise.resolve()
+    const resolveShopGo = vi.fn(async (id: string) => {
+      const prev = gate
+      let release!: () => void
+      gate = new Promise<void>((r) => {
+        release = r
+      })
+      await prev
+      const url = goMap[id] ?? null
+      release()
+      return url
+    })
+
+    const flushed: string[] = []
+    const result = await fetchAllNodebitsMerchants({
+      client,
+      intervalMs: 0,
+      resolveShopGo,
+      resolveItem: async () => null,
+      onMerchantsReady: (rows) => {
+        for (const r of rows) flushed.push(r.id)
+      }
+    })
+
+    expect(result.rows).toHaveLength(2)
+    expect(flushed).toHaveLength(2)
+    expect(flushed.sort()).toEqual(
+      [`${NODEBITS_ID_PREFIX}s-a`, `${NODEBITS_ID_PREFIX}s-b`].sort()
+    )
+    // No flush for go-miss
+    expect(flushed.some((id) => id.endsWith('s-none'))).toBe(false)
+  })
+
+  it('uses client.fetchShopGoTarget when resolveShopGo not injected', async () => {
+    const shops = [shop({ id: 's1', name: 'A' })]
+    const client = mockClient({ shops })
+    ;(client.fetchShopGoTarget as ReturnType<typeof vi.fn>).mockResolvedValue(
+      'https://pay.ldxp.cn/shop/FROMGO'
+    )
+    const result = await fetchAllNodebitsMerchants({
+      client,
+      intervalMs: 0,
+      resolveItem: async () => null
+    })
+    expect(client.fetchShopGoTarget).toHaveBeenCalledWith('s1', undefined)
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows[0]!.shop_url).toBe('https://pay.ldxp.cn/shop/FROMGO')
   })
 })

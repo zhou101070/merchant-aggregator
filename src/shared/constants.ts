@@ -50,6 +50,12 @@ export const RATE_LIMITS = {
   shopMinIntervalMs: { min: 500, default: 500 },
   /** @deprecated use shopMinIntervalMs */
   ldxpMinIntervalMs: { min: 500, default: 500 },
+  /**
+   * Max parallel host groups (shop scrape) / cross-host work units (go / item-resolve).
+   * Shop queue: one active scrape per host; up to this many hosts at once.
+   * Same host HTTP still spaced by shopMinIntervalMs via the shared host limiter.
+   */
+  maxHostParallel: 8,
   requestTimeoutMs: 25_000,
   maxRetries: 3,
   circuitBreakerFailures: 5

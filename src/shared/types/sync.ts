@@ -28,6 +28,11 @@ export interface SyncProgressEvent {
   startedAt?: string
   /** Original job type before alias normalize (e.g. ldxp_all → shop_all) */
   requestedJobType?: SyncJobType
+  /**
+   * 后台自动刷新等：不占用前台互斥 lane，不把 UI「忙碌」锁死，
+   * 可与用户发起的任务并行。
+   */
+  background?: boolean
 }
 
 /** One outbound HTTP call during an active sync job (UI request stream). */

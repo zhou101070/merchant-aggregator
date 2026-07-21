@@ -2,10 +2,12 @@
 
 | 字段 | 值 |
 | --- | --- |
-| 状态 | 已落档 · P0/P1 已实现（内置代理 / 节点 pin 已移除） |
-| 日期 | 2026-07-18 |
+| 状态 | 已落档 · 双池调度代码仍 stub；**live 路径**为 host 分组队列（见下） |
+| 日期 | 2026-07-18（live host-queue 更新 2026-07-21） |
 | 范围 | shop 类任务（`shop_*` / bootstrap 刮店阶段）；`merchants` 任务不变 |
 | 非目标 | 不改自动刷新选店逻辑本身；不改单品库存刷新；不持久化池快照到 SQLite |
+
+> **Live product path（以代码为准）：** `runShopQueue` → `runHostGroupedQueue`：按 `scrapeTargetHostKey` 分域名组，组间并行（`maxHostParallel`）、组内串行；`runShopPool` 仍禁用。下文双池设计为历史/可选演进，勿当作当前运行时。
 
 ---
 
@@ -13,8 +15,8 @@
 
 ### 1.1 现状
 
-- 店级串行：`runShopQueue` 一次只刮完一整店再进下一店。
-- 店内（shopApi）按 `goodsType` 顺序分页，页级有 `shopPageConcurrency`。
+- 店级调度：`runShopQueue` 按域名分组并行（非双池）。
+- 店内（shopApi）按 `goodsType` 顺序分页，页级 `shopPageConcurrency` 固定 1。
 - 任务详情弹窗只有摘要/错误；**同步请求表**与运行态信息挂在同步中心页外层。
 
 ### 1.2 目标
@@ -260,7 +262,7 @@ storeKey → {
 
 ### 3.6 WAF / background（B2）
 
-> 内置代理 / 节点 pin·rotate 已移除；出站仅直连或环境变量代理（`MA_PROXY` / `HTTP(S)_PROXY`）。
+> 内置代理 / 节点 pin·rotate 已移除；出站优先环境变量代理（`MA_PROXY` / `HTTP(S)_PROXY`），否则跟随系统代理（与浏览器一致）；`mainFetch` 默认单请求超时 `RATE_LIMITS.requestTimeoutMs`。
 
 #### WAF
 

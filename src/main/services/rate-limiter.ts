@@ -1,3 +1,11 @@
+/**
+ * Rate limiting for outbound HTTP.
+ *
+ * Rule (universal — merchant list + product sync):
+ *   Same host → shared interval spacing.
+ *   Different hosts → independent; may start in parallel.
+ */
+
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(abortError())
@@ -25,14 +33,11 @@ function abortError(): Error {
 }
 
 /**
- * Slot-reservation gap limiter.
+ * Slot-reservation gap limiter (single lane).
  *
  * Each caller synchronously reserves the next release slot, spaced `intervalMs`
  * from the previous reservation, then sleeps until that slot. This spaces the
- * *start* of consecutive requests even under concurrency (unlike a naive
- * lastAt-comparison, where simultaneous callers all read the same timestamp and
- * burst through together). Requests may still overlap in flight — that is what
- * lets a concurrent page batch pipeline while keeping an anti-WAF cadence.
+ * *start* of consecutive requests even under concurrency.
  */
 export class IntervalLimiter {
   /** Earliest release time for the next reservation (epoch ms). */
@@ -67,15 +72,35 @@ export function pageStartGapMs(minIntervalMs: number, concurrency: number): numb
   return Math.max(0, Math.floor(interval / conc))
 }
 
-const FALLBACK_NODE_KEY = '*'
+const FALLBACK_HOST_KEY = '*'
 
 /**
- * Per-key slot-reservation limiter.
- *
- * Concurrent callers each synchronously claim the free-est key, so N keys
- * allow up to N starts at once, while the same key stays spaced by intervalMs.
+ * Normalize a hostname or absolute URL into a stable limiter key.
+ * Empty / unparseable → `*`.
  */
-export class PerNodeIntervalLimiter {
+export function hostKey(hostOrUrl: string | null | undefined): string {
+  if (!hostOrUrl?.trim()) return FALLBACK_HOST_KEY
+  const raw = hostOrUrl.trim()
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      return new URL(raw).hostname.toLowerCase().replace(/\.$/, '') || FALLBACK_HOST_KEY
+    }
+  } catch {
+    /* fall through */
+  }
+  // bare host or host:port
+  const noPath = raw.split('/')[0]!.split('?')[0]!.trim()
+  const host = noPath.toLowerCase().replace(/\.$/, '')
+  return host || FALLBACK_HOST_KEY
+}
+
+/**
+ * Per-host slot-reservation limiter.
+ *
+ * Concurrent callers each synchronously claim a host key, so different hosts
+ * allow up to N starts at once, while the same host stays spaced by intervalMs.
+ */
+export class PerHostIntervalLimiter {
   private readonly nextAt = new Map<string, number>()
 
   constructor(private intervalMs: number) {}
@@ -90,13 +115,14 @@ export class PerNodeIntervalLimiter {
   }
 
   /**
-   * Reserve a start slot on one of `nodeKeys` (or fallback `*`).
+   * Reserve a start slot on one of `hostKeys` (or fallback `*`).
+   * When multiple keys are offered, picks the freest (earliest ready).
    * Returns the key that was reserved.
    */
-  async acquire(nodeKeys: readonly string[], signal?: AbortSignal): Promise<string> {
+  async acquire(hostKeys: readonly string[], signal?: AbortSignal): Promise<string> {
     if (signal?.aborted) throw abortError()
-    const keys = uniqueKeys(nodeKeys)
-    const list = keys.length ? keys : [FALLBACK_NODE_KEY]
+    const keys = uniqueKeys(hostKeys)
+    const list = keys.length ? keys : [FALLBACK_HOST_KEY]
     const now = Date.now()
     let bestKey = list[0]!
     let bestScheduled = Number.POSITIVE_INFINITY
@@ -108,7 +134,7 @@ export class PerNodeIntervalLimiter {
         bestKey = k
       }
     }
-    // Reserve before await so concurrent acquirers pick distinct free nodes.
+    // Reserve before await so concurrent acquirers pick distinct free hosts.
     this.nextAt.set(bestKey, bestScheduled + this.intervalMs)
     const delay = bestScheduled - now
     if (delay > 0) {
@@ -118,14 +144,14 @@ export class PerNodeIntervalLimiter {
     return bestKey
   }
 
-  /** Single-key wait (pinned node or legacy global). */
-  async waitTurn(nodeKey: string, signal?: AbortSignal): Promise<void> {
-    await this.acquire([nodeKey || FALLBACK_NODE_KEY], signal)
+  /** Single-host wait (primary API for outbound HTTP). */
+  async waitTurn(host: string, signal?: AbortSignal): Promise<void> {
+    await this.acquire([hostKey(host) || FALLBACK_HOST_KEY], signal)
   }
 
   /** Test helper */
-  peekNextAt(nodeKey: string): number {
-    return this.nextAt.get(nodeKey) ?? 0
+  peekNextAt(host: string): number {
+    return this.nextAt.get(hostKey(host)) ?? 0
   }
 
   clear(): void {
@@ -133,11 +159,15 @@ export class PerNodeIntervalLimiter {
   }
 }
 
+/** @deprecated alias — use PerHostIntervalLimiter */
+export const PerNodeIntervalLimiter = PerHostIntervalLimiter
+export type PerNodeIntervalLimiter = PerHostIntervalLimiter
+
 function uniqueKeys(keys: readonly string[]): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   for (const raw of keys) {
-    const k = typeof raw === 'string' ? raw.trim() : ''
+    const k = hostKey(raw)
     if (!k || seen.has(k)) continue
     seen.add(k)
     out.push(k)
@@ -145,19 +175,61 @@ function uniqueKeys(keys: readonly string[]): string[] {
   return out
 }
 
-/** Process-wide shop outbound limiter. */
-let sharedShopNodeLimiter: PerNodeIntervalLimiter | null = null
+/** Process-wide outbound host limiter (merchant list + product sync share this). */
+let sharedHostLimiter: PerHostIntervalLimiter | null = null
 
-export function getShopNodeLimiter(intervalMs: number): PerNodeIntervalLimiter {
-  if (!sharedShopNodeLimiter) {
-    sharedShopNodeLimiter = new PerNodeIntervalLimiter(intervalMs)
+export function getHostLimiter(intervalMs: number): PerHostIntervalLimiter {
+  if (!sharedHostLimiter) {
+    sharedHostLimiter = new PerHostIntervalLimiter(intervalMs)
   } else {
-    sharedShopNodeLimiter.setIntervalMs(intervalMs)
+    sharedHostLimiter.setIntervalMs(intervalMs)
   }
-  return sharedShopNodeLimiter
+  return sharedHostLimiter
+}
+
+/** @deprecated use getHostLimiter */
+export function getShopNodeLimiter(intervalMs: number): PerHostIntervalLimiter {
+  return getHostLimiter(intervalMs)
 }
 
 /** Test-only reset */
+export function resetHostLimiterForTests(): void {
+  sharedHostLimiter = null
+}
+
+/** @deprecated use resetHostLimiterForTests */
 export function resetShopNodeLimiterForTests(): void {
-  sharedShopNodeLimiter = null
+  resetHostLimiterForTests()
+}
+
+/**
+ * Run `worker` over items with at most `concurrency` in flight.
+ * Different hosts stay independent when workers call getHostLimiter().waitTurn(host).
+ * Results preserve input order.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal
+): Promise<R[]> {
+  const n = items.length
+  if (n === 0) return []
+  const conc = Math.max(1, Math.min(n, Math.floor(concurrency) || 1))
+  const results = new Array<R>(n)
+  let next = 0
+
+  const runOne = async (): Promise<void> => {
+    while (true) {
+      if (signal?.aborted) throw abortError()
+      const i = next
+      next += 1
+      if (i >= n) return
+      results[i] = await worker(items[i]!, i)
+    }
+  }
+
+  const runners = Array.from({ length: conc }, () => runOne())
+  await Promise.all(runners)
+  return results
 }

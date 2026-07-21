@@ -1,24 +1,41 @@
+import { RATE_LIMITS } from '@shared/constants'
 import { AppError } from '@shared/types/errors'
 import { createLogger } from '../../utils/logger'
-import { IntervalLimiter, sleep } from '../../services/rate-limiter'
+import { mapWithConcurrency } from '../../services/rate-limiter'
+import {
+  createDefaultItemShopResolver,
+  resolveMerchantItemLinks,
+  type ItemShopResolver
+} from '../shopapi/resolve-item-shop'
 import { NodebitsClient } from './client'
 import {
   hasMerchantExternalLink,
   normalizeNodebitsMerchant,
   type NormalizedMerchantRow
 } from './normalize'
-import type { NodebitsProductRaw, NodebitsShopRaw } from './zod'
+import type { NodebitsShopRaw } from './zod'
 
 const log = createLogger('nodebits:merchants')
 
 export interface FetchAllNodebitsMerchantsOptions {
   client?: NodebitsClient
-  /** Products page size (default 100). */
-  productLimit?: number
   intervalMs?: number
   signal?: AbortSignal
+  userAgent?: string
+  /** Inject item→shop resolver (tests); default hits shopApi goodsInfo. */
+  resolveItem?: ItemShopResolver
+  /**
+   * Inject per-shop go resolver (tests). Default: client.fetchShopGoTarget.
+   * Return external shop URL or null.
+   */
+  resolveShopGo?: (shopId: string, signal?: AbortSignal) => Promise<string | null>
+  /**
+   * Called as soon as each merchant is fully ready (after /go + optional
+   * item→shop resolve). Prefer this for DB writes during the pull.
+   */
+  onMerchantsReady?: (rows: NormalizedMerchantRow[]) => void
   onProgress?: (p: {
-    phase: 'shops' | 'products' | 'normalize'
+    phase: 'shops' | 'go' | 'normalize' | 'resolve'
     current: number
     total: number
   }) => void
@@ -28,13 +45,15 @@ export interface FetchAllNodebitsMerchantsResult {
   rows: NormalizedMerchantRow[]
   /** Shops returned by /api/shops (before is_test / no-link filters) */
   shopsFetched: number
-  /** Unique shop_ids seen in products */
-  shopsWithProducts: number
+  /** Non-test shops for which /go returned a parseable external URL */
+  goResolved: number
+  /** Non-test shops where /go failed or returned nothing useful */
+  goFailed: number
   droppedTest: number
   droppedNoLink: number
-  productPages: number
-  productsFetched: number
-  productsTotal: number
+  /** shopApi item links that failed goodsInfo → shop */
+  droppedItemUnresolved: number
+  resolvedFromItem: number
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -43,110 +62,32 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-async function fetchAllProducts(
-  client: NodebitsClient,
-  opts: {
-    limit: number
-    intervalMs: number
-    signal?: AbortSignal
-    onProgress?: FetchAllNodebitsMerchantsOptions['onProgress']
-  }
-): Promise<{ products: NodebitsProductRaw[]; pages: number; total: number }> {
-  const limiter = new IntervalLimiter(opts.intervalMs)
-  const products: NodebitsProductRaw[] = []
-  let offset = 0
-  let total = Number.POSITIVE_INFINITY
-  let pages = 0
-  let consecutiveFailures = 0
-
-  while (offset < total) {
-    throwIfAborted(opts.signal)
-    try {
-      await limiter.waitTurn(opts.signal)
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'nodebits merchants fetch cancelled')
-      }
-      throw err
-    }
-    throwIfAborted(opts.signal)
-
-    try {
-      const page = await client.fetchProductsPage({ limit: opts.limit, offset })
-      consecutiveFailures = 0
-      pages += 1
-      total = page.total
-      products.push(...page.products)
-      opts.onProgress?.({
-        phase: 'products',
-        current: Math.min(products.length, Number.isFinite(total) ? total : products.length),
-        total: Number.isFinite(total) ? total : products.length
-      })
-      log.info('products page', {
-        offset,
-        got: page.products.length,
-        total: page.total,
-        accumulated: products.length
-      })
-
-      if (page.products.length === 0) break
-      offset += page.products.length
-      if (page.products.length < opts.limit) break
-      if (Number.isFinite(total) && products.length >= total) break
-    } catch (err) {
-      if (err instanceof AppError && err.code === 'CANCELLED') throw err
-      consecutiveFailures += 1
-      if (consecutiveFailures >= 5) {
-        throw err instanceof AppError
-          ? err
-          : new AppError('NETWORK', 'nodebits products fetch circuit open', {
-              cause: String(err)
-            })
-      }
-      const backoff = Math.min(10_000, 500 * 2 ** (consecutiveFailures - 1))
-      log.warn('products page failed', {
-        offset,
-        consecutiveFailures,
-        backoff,
-        error: err instanceof Error ? err.message : String(err)
-      })
-      try {
-        await sleep(backoff, opts.signal)
-      } catch (sleepErr) {
-        if (sleepErr instanceof Error && sleepErr.name === 'AbortError') {
-          throw new AppError('CANCELLED', 'nodebits merchants fetch cancelled')
-        }
-        throw sleepErr
-      }
-    }
-  }
-
-  if (Number.isFinite(total) && products.length < total) {
-    // Soft: products list can shrink mid-pagination; log and continue with what we have
-    log.warn('products incomplete after pagination', {
-      got: products.length,
-      total,
-      pages
-    })
-  }
-
-  return {
-    products,
-    pages,
-    total: Number.isFinite(total) ? total : products.length
-  }
-}
-
 /**
  * Merchant-list pull from NodeBits (not product sync).
- * Shops + product pages → link enrichment → shared normalizeMerchant / identifyShopPlatform.
+ *
+ * Flow:
+ * 1. GET /api/shops → ids + names
+ * 2. For each non-test shop: GET /go?type=shop&id=… → external URL
+ *    (host-limited on nodebits; other hosts never share this lane)
+ * 3. normalizeMerchant / identifyShopPlatform
+ * 4. shopApi /item/… → goodsInfo shop root (or drop) — per-host parallel
+ * 5. onMerchantsReady per merchant as soon as it is ready (streaming write)
  */
 export async function fetchAllNodebitsMerchants(
   options: FetchAllNodebitsMerchantsOptions = {}
 ): Promise<FetchAllNodebitsMerchantsResult> {
-  const client = options.client ?? new NodebitsClient()
-  const productLimit = options.productLimit ?? 100
-  const intervalMs = options.intervalMs ?? 500
+  const client = options.client ?? new NodebitsClient({ userAgent: options.userAgent })
+  const intervalMs = options.intervalMs ?? RATE_LIMITS.priceaiMerchantsIntervalMs.default
+  const resolveShopGo =
+    options.resolveShopGo ??
+    ((shopId: string, signal?: AbortSignal) => client.fetchShopGoTarget(shopId, signal))
+  // Shared resolver so concurrent workers reuse goodsInfo cache / inflight.
+  const resolveItem =
+    options.resolveItem ??
+    createDefaultItemShopResolver({
+      userAgent: options.userAgent,
+      minIntervalMs: intervalMs
+    })
 
   throwIfAborted(options.signal)
   options.onProgress?.({ phase: 'shops', current: 0, total: 1 })
@@ -163,73 +104,120 @@ export async function fetchAllNodebitsMerchants(
   options.onProgress?.({ phase: 'shops', current: 1, total: 1 })
   log.info('shops fetched', { count: shops.length })
 
-  const { products, pages: productPages, total: productsTotal } = await fetchAllProducts(client, {
-    limit: productLimit,
-    intervalMs,
-    signal: options.signal,
-    onProgress: options.onProgress
-  })
-
-  const byShop = new Map<string, NodebitsProductRaw[]>()
-  for (const p of products) {
-    const list = byShop.get(p.shop_id)
-    if (list) list.push(p)
-    else byShop.set(p.shop_id, [p])
-  }
-
   const fetchedAt = new Date().toISOString()
   const generatedAt = fetchedAt
-  const rows: NormalizedMerchantRow[] = []
   let droppedTest = 0
   let droppedNoLink = 0
+  let goResolved = 0
+  let goFailed = 0
+  let goDone = 0
+  let droppedItemUnresolved = 0
+  let resolvedFromItem = 0
+
+  const work = shops.filter((s) => {
+    if (s.is_test) {
+      droppedTest += 1
+      return false
+    }
+    return true
+  })
+
+  const parallel = RATE_LIMITS.maxHostParallel
+  const goResults = await mapWithConcurrency(
+    work,
+    parallel,
+    async (shop) => {
+      throwIfAborted(options.signal)
+      let externalUrl: string | null = null
+      try {
+        externalUrl = await resolveShopGo(shop.id, options.signal)
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'CANCELLED') throw err
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw new AppError('CANCELLED', 'nodebits merchants fetch cancelled')
+        }
+        log.info('go resolve error', {
+          shopId: shop.id,
+          error: err instanceof Error ? err.message : String(err)
+        })
+        externalUrl = null
+      }
+
+      if (externalUrl) goResolved += 1
+      else goFailed += 1
+      goDone += 1
+      if (goDone % 20 === 0 || goDone === work.length) {
+        options.onProgress?.({
+          phase: 'go',
+          current: goDone,
+          total: work.length
+        })
+      }
+
+      const row = normalizeNodebitsMerchant(shop, {
+        fetchedAt,
+        generatedAt,
+        externalUrl
+      })
+      if (!hasMerchantExternalLink(row)) {
+        droppedNoLink += 1
+        return null
+      }
+
+      // Item→shop if needed, then flush immediately (do not wait for other shops).
+      const resolved = await resolveMerchantItemLinks([row], {
+        resolveItem,
+        userAgent: options.userAgent,
+        minIntervalMs: intervalMs,
+        signal: options.signal,
+        onProgress: () =>
+          options.onProgress?.({
+            phase: 'resolve',
+            current: goDone,
+            total: work.length
+          })
+      })
+      droppedItemUnresolved += resolved.droppedItemUnresolved
+      resolvedFromItem += resolved.resolvedFromItem
+      if (resolved.droppedItemUnresolved) {
+        droppedNoLink += 1
+        return null
+      }
+      const ready = resolved.rows[0]
+      if (!ready) return null
+      options.onMerchantsReady?.([ready])
+      return ready
+    },
+    options.signal
+  )
+
+  const kept = goResults.filter((r): r is NormalizedMerchantRow => r != null)
 
   options.onProgress?.({
     phase: 'normalize',
-    current: 0,
-    total: shops.length
+    current: work.length,
+    total: work.length
   })
-
-  for (let i = 0; i < shops.length; i += 1) {
-    throwIfAborted(options.signal)
-    const shop = shops[i]!
-    if (shop.is_test) {
-      droppedTest += 1
-      continue
-    }
-    const shopProducts = byShop.get(shop.id) ?? []
-    const row = normalizeNodebitsMerchant(shop, shopProducts, { fetchedAt, generatedAt })
-    if (!hasMerchantExternalLink(row)) {
-      droppedNoLink += 1
-      continue
-    }
-    rows.push(row)
-    if ((i + 1) % 50 === 0 || i + 1 === shops.length) {
-      options.onProgress?.({
-        phase: 'normalize',
-        current: i + 1,
-        total: shops.length
-      })
-    }
-  }
 
   log.info('nodebits merchants done', {
     shops: shops.length,
-    withProducts: byShop.size,
-    kept: rows.length,
+    goResolved,
+    goFailed,
+    kept: kept.length,
     droppedTest,
     droppedNoLink,
-    productPages,
-    products: products.length
+    droppedItemUnresolved,
+    resolvedFromItem
   })
 
   return {
-    rows,
+    rows: kept,
     shopsFetched: shops.length,
-    shopsWithProducts: byShop.size,
+    goResolved,
+    goFailed,
     droppedTest,
     droppedNoLink,
-    productPages,
-    productsFetched: products.length,
-    productsTotal
+    droppedItemUnresolved,
+    resolvedFromItem
   }
 }

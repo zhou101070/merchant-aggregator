@@ -3,6 +3,7 @@
  * Inspired by field-weighted retrieval + light business boosts (BM25/Scoring Profile ideas).
  */
 import { nameNorm } from './name-norm'
+import { isPureLatinWord } from './search-query'
 
 /** Domain synonym clusters (all forms are mutual aliases after nameNorm). */
 const SYNONYM_CLUSTERS: string[][] = [
@@ -115,9 +116,57 @@ export function idfWeight(catalogSize: number, df: number): number {
   return Math.log((n + 1) / (d + 1)) + 1
 }
 
-function fieldHasGroup(fieldN: string, group: string[]): boolean {
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Whole Latin word in a normalized field (not substring of steam/chatgpt).
+ * Non-Latin boundaries (CJK, space, punctuation) count as edges.
+ */
+export function wholeLatinWord(fieldN: string, word: string): boolean {
+  if (!fieldN || !word || !isPureLatinWord(word)) return false
+  const re = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(word)}(?:[^a-z0-9]|$)`, 'i')
+  return re.test(fieldN)
+}
+
+/** Single synonym surface against one field (Latin = whole word; else substring). */
+export function fieldHasSynonym(fieldN: string, synonym: string): boolean {
+  if (!fieldN || !synonym) return false
+  if (isPureLatinWord(synonym)) return wholeLatinWord(fieldN, synonym)
+  return fieldN.includes(synonym)
+}
+
+export function fieldHasGroup(fieldN: string, group: string[]): boolean {
   if (!fieldN || !group.length) return false
-  return group.some((g) => g && fieldN.includes(g))
+  return group.some((g) => fieldHasSynonym(fieldN, g))
+}
+
+/**
+ * Recall parity with SearchService SQL:
+ * - Groups that include a pure Latin word (team/pro/claude… + CJK synonyms):
+ *   title only; Latin forms whole-word, CJK forms substring (团队版).
+ * - Other groups: title / shop / category / type as before.
+ */
+export function groupMatchesRecall(
+  fields: { titleN: string; catN: string; typeN: string; shopN: string },
+  group: string[]
+): boolean {
+  if (!group.length) return false
+  const latinGroup = group.some((g) => isPureLatinWord(g))
+  if (latinGroup) {
+    return group.some((g) => {
+      if (!g) return false
+      if (isPureLatinWord(g)) return wholeLatinWord(fields.titleN, g)
+      return fields.titleN.includes(g)
+    })
+  }
+  return (
+    fieldHasGroup(fields.titleN, group) ||
+    fieldHasGroup(fields.catN, group) ||
+    fieldHasGroup(fields.typeN, group) ||
+    fieldHasGroup(fields.shopN, group)
+  )
 }
 
 /**
@@ -140,12 +189,7 @@ export function computeIdfFromRows(
       const shopN = nameNorm(row.shopName || row.merchantName || '')
       const catN = nameNorm(row.categoryName || '')
       const typeN = nameNorm(row.goodsType || '')
-      if (
-        fieldHasGroup(titleN, group) ||
-        fieldHasGroup(shopN, group) ||
-        fieldHasGroup(catN, group) ||
-        fieldHasGroup(typeN, group)
-      ) {
+      if (groupMatchesRecall({ titleN, catN, typeN, shopN }, group)) {
         df += 1
       }
     }
@@ -158,6 +202,15 @@ function earliestIndex(fieldN: string, group: string[], from = 0): number {
   let best = -1
   for (const g of group) {
     if (!g) continue
+    if (isPureLatinWord(g)) {
+      const slice = fieldN.slice(from)
+      const m = new RegExp(`(?:^|[^a-z0-9])(${escapeRegExp(g)})(?:[^a-z0-9]|$)`, 'i').exec(slice)
+      if (!m || m.index == null) continue
+      const local = m[0].toLowerCase().indexOf(g.toLowerCase())
+      const i = from + m.index + (local >= 0 ? local : 0)
+      if (best < 0 || i < best) best = i
+      continue
+    }
     const i = fieldN.indexOf(g, from)
     if (i >= 0 && (best < 0 || i < best)) best = i
   }

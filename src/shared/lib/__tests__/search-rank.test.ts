@@ -4,10 +4,12 @@ import {
   compareRelevance,
   computeIdfFromRows,
   expandTokenGroups,
+  groupMatchesRecall,
   idfWeight,
   inQueryOrder,
   scoreShopRank,
-  synonymGroup
+  synonymGroup,
+  wholeLatinWord
 } from '../search-rank'
 import { tokenizeQuery } from '../search-query'
 
@@ -29,6 +31,47 @@ describe('search-rank', () => {
     // bare '+' must not alias plus (would match any title containing +)
     expect(synonymGroup('plus')).toEqual(['plus'])
     expect(synonymGroup('plus')).not.toContain('+')
+    expect(synonymGroup('team')).toEqual(expect.arrayContaining(['team', '团队']))
+  })
+
+  it('whole Latin word does not match substrings (team ≠ steam)', () => {
+    expect(wholeLatinWord('chatgpt team 月卡', 'team')).toBe(true)
+    expect(wholeLatinWord('steam 账号', 'team')).toBe(false)
+    expect(wholeLatinWord('claude pro月卡', 'pro')).toBe(true)
+    expect(wholeLatinWord('improvement', 'pro')).toBe(false)
+  })
+
+  it('latin-word groups recall title only (category team does not count)', () => {
+    const group = synonymGroup('team')
+    expect(
+      groupMatchesRecall(
+        { titleN: 'chatgpt team 月卡', catN: '', typeN: '', shopN: '' },
+        group
+      )
+    ).toBe(true)
+    expect(
+      groupMatchesRecall(
+        { titleN: 'chatgpt 团队版', catN: '', typeN: '', shopN: '' },
+        group
+      )
+    ).toBe(true)
+    expect(
+      groupMatchesRecall(
+        {
+          titleN: 'codex 接码 美区',
+          catN: 'gpt 反代用（team、k12）',
+          typeN: '',
+          shopN: ''
+        },
+        group
+      )
+    ).toBe(false)
+    expect(
+      groupMatchesRecall(
+        { titleN: 'steam 成品号', catN: '', typeN: '', shopN: '' },
+        group
+      )
+    ).toBe(false)
   })
 
   it('alnum surface forms cover glued / spaced / hyphen versions', () => {

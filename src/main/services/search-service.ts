@@ -27,6 +27,7 @@ import {
   compactLetterVersion,
   isDurationToken,
   isLetterVersionGroup,
+  isPureLatinWord,
   isVersionTailToken,
   likeContains,
   likeTokenBoundary,
@@ -229,6 +230,25 @@ export class SearchService {
     )`
   }
 
+  /**
+   * Pure Latin words (team / pro / claude): title only + whole-token.
+   * - Avoids category "GPT 反代用（team、k12）" flooding unrelated titles
+   * - Avoids substring "steam" matching query "team"
+   * Legacy rows without title_tokens: space-padded title_norm (not bare %word%).
+   */
+  private latinWordTitleMatchClause(paramKey: string): string {
+    return `(
+      (' ' || COALESCE(s.title_tokens, '') || ' ') LIKE @${paramKey} ESCAPE '\\'
+      OR (
+        (s.title_tokens IS NULL OR s.title_tokens = '')
+        AND (
+          (' ' || COALESCE(s.title_norm, s.title) || ' ') LIKE @${paramKey} ESCAPE '\\'
+          OR (' ' || s.title || ' ') LIKE @${paramKey} ESCAPE '\\'
+        )
+      )
+    )`
+  }
+
   private bindTokenMatch(
     group: string[],
     keyPrefix: string,
@@ -237,6 +257,8 @@ export class SearchService {
     const versionOnly = group.length > 0 && group.every((v) => isVersionTailToken(v))
     // k12 / gpt4 synonym surfaces: title whole-token only (not category/shop LIKE)
     const letterVersion = !versionOnly && isLetterVersionGroup(group)
+    // team/pro/claude (+ CJK synonyms like 团队): title-only; Latin whole-word
+    const latinWordGroup = !versionOnly && !letterVersion && group.some((v) => isPureLatinWord(v))
     return group.map((v, j) => {
       const key = `${keyPrefix}_${j}`
       if (versionOnly || letterVersion) {
@@ -245,6 +267,15 @@ export class SearchService {
         // Legacy rows without title_tokens: compact form only (k12 not "k 12")
         params[`${key}_sub`] = likeContains(compactLetterVersion(v) || v)
         return this.versionTitleMatchClause(key)
+      }
+      if (latinWordGroup && isPureLatinWord(v)) {
+        params[key] = likeTokenBoundary(v)
+        return this.latinWordTitleMatchClause(key)
+      }
+      if (latinWordGroup) {
+        // CJK synonym of a Latin word (团队 / 专业版): title substring only
+        params[key] = likeContains(v)
+        return `(${this.titleMatchClause(key)})`
       }
       params[key] = likeContains(v)
       return this.fieldMatchClause(key)

@@ -15,7 +15,11 @@ import { useSyncStatus } from '../hooks/useSync'
 import { DUJIAO_PLATFORM_ID, YICIYUAN_PLATFORM_ID } from '@shared/platforms/identify'
 import { SHOP_PLATFORM_OTHER, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import { shopAllSpec } from '../lib/confirm-sync'
-import { resolveShopIdentity, resolveShopRef } from '../lib/shop-ref'
+import {
+  canSyncShopProducts,
+  resolveShopIdentity,
+  resolveShopSyncStartRef
+} from '../lib/shop-ref'
 import { formatSyncProgress } from '../lib/sync-labels'
 import { timeAgo } from '../lib/format-time'
 
@@ -160,8 +164,8 @@ export function MerchantsPage(): React.JSX.Element {
     })
   }
 
-  /** Aligned with identify + SCRAPABLE_SQL (mapRow dual-fills from ldxp). */
-  const scrapable = (m: Merchant): boolean => resolveShopIdentity(m).scrapable
+  /** Known scrapable or unknown-platform trial (host / token present). */
+  const scrapable = (m: Merchant): boolean => canSyncShopProducts(m)
   const ldxpRows = useMemo(() => rows.filter((m) => scrapable(m)), [rows])
   const checkedLdxp = useMemo(
     () => [...checked].filter((id) => rows.some((m) => m.id === id && scrapable(m))),
@@ -409,7 +413,7 @@ export function MerchantsPage(): React.JSX.Element {
           refreshingStockId={refreshingStockId}
           onClose={() => selectMerchant(null)}
           onSyncShop={(m) => {
-            const r = resolveShopRef(m)
+            const r = resolveShopSyncStartRef({ ...m, merchantId: m.id })
             if (!r) return
             void start('shop_one', {
               merchantId: m.id,

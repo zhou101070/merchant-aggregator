@@ -69,4 +69,16 @@ describe('sync-request-log', () => {
     expect(listSyncHttpRequests()[0]?.host).toBe('b.example')
     leaveSyncRequestScope('job-b')
   })
+
+  it('settles orphan pending rows when the last scope leaves', () => {
+    enterSyncRequestScope('job-a')
+    const id = beginSyncHttpRequest({ url: 'https://hang.example/x' })
+    expect(id).toBeTruthy()
+    expect(listSyncHttpRequests()[0]?.phase).toBe('pending')
+    leaveSyncRequestScope('job-a')
+    const row = listSyncHttpRequests()[0]
+    expect(row?.phase).toBe('error')
+    expect(row?.error).toBe('请求未完成')
+    expect(typeof row?.durationMs).toBe('number')
+  })
 })

@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import { AppError } from '@shared/types/errors'
 import type { ShopSiteProfile } from '@shared/platforms/shop-types'
-import { resolveShopApiEndpoints, shopRootUrl } from '@shared/platforms/shop-types'
+import { itemPageUrl, resolveShopApiEndpoints, shopRootUrl } from '@shared/platforms/shop-types'
 import { SHOP_API_LIMITS } from '@shared/constants'
 import { createLogger } from '../../utils/logger'
 import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
-import { IntervalLimiter } from '../../services/rate-limiter'
+import { getHostLimiter, hostKey } from '../../services/rate-limiter'
 import {
   browserCorsApiHeaders,
   browserDocumentHeaders,
@@ -38,7 +38,16 @@ export interface ShopApiGoodsItem {
   description?: string | null
   category?: { id?: number; name?: string } | null
   extend?: { stock_count?: number | null } | null
-  user?: { token?: string; nickname?: string } | null
+  user?: { token?: string; nickname?: string; link?: string | null } | null
+}
+
+/** Response of /shopApi/Shop/goodsInfo — used to map item URL → shop root. */
+export interface ShopApiGoodsInfo {
+  goods_key: string
+  name: string | null
+  shopToken: string
+  shopUrl: string
+  nickname: string | null
 }
 
 /**
@@ -50,7 +59,8 @@ export class ShopApiClient {
   private readonly visitorId: string
   private readonly cookieJar = new Map<string, string>()
   private readonly ua: string
-  private readonly limiter: IntervalLimiter
+  private readonly minIntervalMs: number
+  private readonly host: string
 
   constructor(
     profile: ShopSiteProfile,
@@ -59,7 +69,13 @@ export class ShopApiClient {
     this.profile = profile
     this.visitorId = options?.visitorId ?? createVisitorId()
     this.ua = resolveRequestUserAgent(options?.userAgent)
-    this.limiter = new IntervalLimiter(options?.minIntervalMs ?? profile.defaultMinIntervalMs)
+    this.minIntervalMs = options?.minIntervalMs ?? profile.defaultMinIntervalMs
+    this.host = hostKey(profile.baseUrl)
+  }
+
+  /** Shared process-wide host lane — different hosts do not block each other. */
+  private async throttle(signal?: AbortSignal): Promise<void> {
+    await getHostLimiter(this.minIntervalMs).waitTurn(this.host, signal)
   }
 
   get baseUrl(): string {
@@ -111,14 +127,15 @@ export class ShopApiClient {
   private async postJson<T>(
     path: string,
     body: Record<string, unknown>,
-    token: string
+    referer: string,
+    signal?: AbortSignal
   ): Promise<T> {
-    await this.limiter.waitTurn()
+    await this.throttle(signal)
     const url = `${this.profile.baseUrl}${path}`
     const headers = browserCorsApiHeaders({
       userAgent: this.ua,
       origin: this.profile.baseUrl,
-      referer: shopRootUrl(this.profile, token),
+      referer,
       visitorId: this.visitorId,
       cookie: this.cookieHeader()
     })
@@ -128,9 +145,16 @@ export class ShopApiClient {
       res = await mainFetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal
       })
     } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message))) {
+        throw new AppError('CANCELLED', 'shop request cancelled', {
+          path,
+          platformId: this.profile.id
+        })
+      }
       throw new AppError('NETWORK', `shop fetch failed: ${String(err)}`, {
         path,
         platformId: this.profile.id,
@@ -183,14 +207,24 @@ export class ShopApiClient {
     return json.data as T
   }
 
-  async warmup(token: string): Promise<void> {
-    await this.limiter.waitTurn()
+  private postJsonForShopToken<T>(
+    path: string,
+    body: Record<string, unknown>,
+    token: string,
+    signal?: AbortSignal
+  ): Promise<T> {
+    return this.postJson(path, body, shopRootUrl(this.profile, token), signal)
+  }
+
+  async warmup(token: string, signal?: AbortSignal): Promise<void> {
+    await this.throttle(signal)
     try {
       const res = await mainFetch(shopRootUrl(this.profile, token), {
         headers: browserDocumentHeaders({
           userAgent: this.ua,
           visitorId: this.visitorId
-        })
+        }),
+        signal
       })
       this.absorbSetCookie(res)
       const text = await res.text()
@@ -227,7 +261,7 @@ export class ShopApiClient {
 
   async shopInfo(token: string): Promise<ShopApiShopInfo> {
     const endpoints = resolveShopApiEndpoints(this.profile)
-    const data = await this.postJson<Record<string, unknown>>(
+    const data = await this.postJsonForShopToken<Record<string, unknown>>(
       endpoints.info,
       { token, category_key: null },
       token
@@ -244,6 +278,45 @@ export class ShopApiClient {
     }
   }
 
+  /**
+   * Item page API: goods_key → owning shop token + shop root URL.
+   * Referer must be the item page (not /shop/:token).
+   */
+  async goodsInfo(goodsKey: string): Promise<ShopApiGoodsInfo> {
+    const key = goodsKey.trim()
+    if (!key) {
+      throw new AppError('SCHEMA_VALIDATION', 'goodsInfo requires goods_key', {
+        platformId: this.profile.id
+      })
+    }
+    const endpoints = resolveShopApiEndpoints(this.profile)
+    const data = await this.postJson<Record<string, unknown>>(
+      endpoints.goodsInfo,
+      { goods_key: key },
+      itemPageUrl(this.profile, key)
+    )
+    const user =
+      data.user && typeof data.user === 'object' && !Array.isArray(data.user)
+        ? (data.user as Record<string, unknown>)
+        : null
+    const tokenRaw = user?.token != null ? String(user.token).trim() : ''
+    if (!tokenRaw) {
+      throw new AppError('SCHEMA_VALIDATION', 'goodsInfo missing user.token', {
+        platformId: this.profile.id,
+        goodsKey: key
+      })
+    }
+    const linkRaw = user?.link != null ? String(user.link).trim() : ''
+    const shopUrl = linkRaw || shopRootUrl(this.profile, tokenRaw)
+    return {
+      goods_key: data.goods_key != null ? String(data.goods_key) : key,
+      name: data.name != null ? String(data.name) : null,
+      shopToken: tokenRaw,
+      shopUrl,
+      nickname: user?.nickname != null ? String(user.nickname) : null
+    }
+  }
+
   async goodsList(params: {
     token: string
     goodsType: string
@@ -257,7 +330,7 @@ export class ShopApiClient {
       params.pageSize ?? SHOP_API_LIMITS.defaultPageSize,
       SHOP_API_LIMITS.maxPageSize
     )
-    const data = await this.postJson<Record<string, unknown> | ShopApiGoodsItem[]>(
+    const data = await this.postJsonForShopToken<Record<string, unknown> | ShopApiGoodsItem[]>(
       endpoints.goodsList,
       {
         token: params.token,

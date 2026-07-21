@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTransientNetworkError } from '../main-fetch'
+import { isTransientNetworkError, mergeAbortSignals } from '../main-fetch'
 
 describe('isTransientNetworkError', () => {
   it('detects chromium connection closed / ssl handshake noise', () => {
@@ -23,5 +23,26 @@ describe('isTransientNetworkError', () => {
     expect(isTransientNetworkError(abort)).toBe(false)
     expect(isTransientNetworkError(new Error('HTTP 404'))).toBe(false)
     expect(isTransientNetworkError(new Error('invalid JSON'))).toBe(false)
+  })
+})
+
+describe('mergeAbortSignals', () => {
+  it('returns undefined when no signals given', () => {
+    expect(mergeAbortSignals()).toBeUndefined()
+    expect(mergeAbortSignals(null, undefined)).toBeUndefined()
+  })
+
+  it('returns the single signal as-is', () => {
+    const c = new AbortController()
+    expect(mergeAbortSignals(c.signal)).toBe(c.signal)
+  })
+
+  it('aborts when either input aborts', () => {
+    const a = new AbortController()
+    const b = new AbortController()
+    const merged = mergeAbortSignals(a.signal, b.signal)
+    expect(merged?.aborted).toBe(false)
+    b.abort()
+    expect(merged?.aborted).toBe(true)
   })
 })

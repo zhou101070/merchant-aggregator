@@ -50,4 +50,17 @@ describe('shouldBlockMerchantAfterSyncFailure', () => {
       })
     ).toBe(false)
   })
+
+  it('never blocks silent unknown-platform all-modes-failed', () => {
+    expect(
+      shouldBlockMerchantAfterSyncFailure({
+        enabled: true,
+        code: 'NOT_FOUND',
+        notFamily: false,
+        merchantId: 'm1',
+        silentUnknown: true
+      })
+    ).toBe(false)
+  })
 })
+

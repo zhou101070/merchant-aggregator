@@ -9,9 +9,12 @@ import {
 import { SHOP_PROFILES } from '@shared/platforms/shop-profiles'
 import type { ShopSiteProfile } from '@shared/platforms/shop-types'
 import { findProfileById } from '@shared/platforms/shop-types'
+import { hostKey } from '../services/rate-limiter'
 import { scrapeShopApi } from './shopapi/scraper'
 import { scrapeDujiao } from './dujiao/scraper'
 import { scrapeYiciyuan } from './yiciyuan/scraper'
+import { AUTOPIXEL_PLATFORM_ID } from './autopixel/client'
+import { scrapeAutopixel } from './autopixel/scraper'
 import type { NormalizedShopProductRow } from '../db/repositories/shop-products-repo'
 
 export interface ShopScrapeTarget {
@@ -25,6 +28,14 @@ export interface ShopScrapeTarget {
   baseUrl?: string | null
   /** Optional display name for host-token scrapers. */
   shopName?: string | null
+  /**
+   * When true, try known scrape modes in order (unknown platform strategy).
+   * Also used when identity is not scrapable but host/token can be trialed.
+   */
+  trialUnknownPlatform?: boolean
+  /** Optional URL hints for /shop/:token extraction during unknown trials. */
+  shopUrl?: string | null
+  entryUrl?: string | null
 }
 
 /** Formal adapter interface for shop families. */
@@ -96,6 +107,27 @@ const yiciyuanScraper: ShopScraper = {
   }
 }
 
+const autopixelScraper: ShopScraper = {
+  async scrape(opts) {
+    const result = await scrapeAutopixel({
+      shopUrl: opts.target.shopUrl,
+      entryUrl: opts.target.entryUrl,
+      baseUrl: opts.target.baseUrl,
+      token: opts.target.token,
+      merchantId: opts.target.merchantId,
+      shopName: opts.target.shopName,
+      minIntervalMs: opts.minIntervalMs,
+      signal: opts.signal,
+      onProgress: opts.onProgress
+    })
+    return {
+      rows: result.rows,
+      shopName: result.shopName,
+      goodsCount: result.goodsCount
+    }
+  }
+}
+
 function unsupportedFamilyScraper(family: ShopFamilyId): ShopScraper {
   return {
     async scrape() {
@@ -112,6 +144,7 @@ function unsupportedFamilyScraper(family: ShopFamilyId): ShopScraper {
 export function scraperFor(platformId: string): ShopScraper {
   if (platformId === DUJIAO_PLATFORM_ID) return dujiaoScraper
   if (platformId === YICIYUAN_PLATFORM_ID || platformId === 'kami') return yiciyuanScraper
+  if (platformId === AUTOPIXEL_PLATFORM_ID) return autopixelScraper
 
   const profile = getProfile(platformId)
   if (!profile) {
@@ -141,6 +174,7 @@ export function scraperFor(platformId: string): ShopScraper {
 export function scraperForIdentity(identity: ShopIdentity): ShopScraper {
   if (identity.scrapeStrategy === 'dujiao') return dujiaoScraper
   if (identity.scrapeStrategy === 'yiciyuan') return yiciyuanScraper
+  if (identity.scrapeStrategy === 'autopixel') return autopixelScraper
   if (identity.scrapeStrategy === 'shopapi' && identity.platformId) {
     return scraperFor(identity.platformId)
   }
@@ -168,13 +202,46 @@ export async function scrapeShopTarget(options: {
   pageConcurrency?: number
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
-}): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
+}): Promise<{
+  rows: NormalizedShopProductRow[]
+  shopName: string | null
+  goodsCount: number
+  /** Set when unknown-platform trial matched a known mode */
+  discoveredRef?: { platformId: string; token: string }
+}> {
   const identity =
     options.target.identity ??
     identifyShopPlatform({
       shopPlatform: options.target.platformId,
-      shopToken: options.target.token
+      shopToken: options.target.token,
+      shopUrl: options.target.shopUrl,
+      entryUrl: options.target.entryUrl,
+      host: options.target.token
     })
+
+  const trial =
+    options.target.trialUnknownPlatform === true ||
+    (await import('./unknown-platform-scrape')).shouldTrialUnknownPlatform(identity)
+
+  if (trial) {
+    const { scrapeUnknownPlatformTrials } = await import('./unknown-platform-scrape')
+    const result = await scrapeUnknownPlatformTrials({
+      target: options.target,
+      minIntervalMs: options.minIntervalMs ?? 500,
+      pageConcurrency: options.pageConcurrency,
+      signal: options.signal,
+      onProgress: options.onProgress,
+      shopUrl: options.target.shopUrl,
+      entryUrl: options.target.entryUrl
+    })
+    return {
+      rows: result.rows,
+      shopName: result.shopName,
+      goodsCount: result.goodsCount,
+      discoveredRef: result.discoveredRef
+    }
+  }
+
   return scraperForIdentity(identity).scrape({
     target: options.target,
     minIntervalMs: options.minIntervalMs ?? 500,
@@ -182,4 +249,15 @@ export async function scrapeShopTarget(options: {
     signal: options.signal,
     onProgress: options.onProgress
   })
+}
+
+/**
+ * Host key for per-host concurrency (same host shares rate limit; different hosts independent).
+ * shopApi → profile base host; host-token families → token / baseUrl host.
+ */
+export function scrapeTargetHostKey(target: ShopScrapeTarget): string {
+  const profile = getProfile(target.platformId)
+  if (profile?.baseUrl) return hostKey(profile.baseUrl)
+  if (target.baseUrl) return hostKey(target.baseUrl)
+  return hostKey(target.token)
 }

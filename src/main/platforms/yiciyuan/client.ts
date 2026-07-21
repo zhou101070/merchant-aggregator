@@ -1,7 +1,7 @@
 import { AppError } from '@shared/types/errors'
 import { createLogger } from '../../utils/logger'
 import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
-import { IntervalLimiter } from '../../services/rate-limiter'
+import { getHostLimiter, hostKey } from '../../services/rate-limiter'
 import { browserJsonGetHeaders, resolveRequestUserAgent } from '../../utils/request-headers'
 
 const log = createLogger('yiciyuan')
@@ -79,8 +79,8 @@ export function resolveYiciyuanBaseUrl(opts: {
 export class YiciyuanClient {
   readonly baseUrl: string
   private readonly ua: string
-  private readonly limiter: IntervalLimiter
   private readonly minIntervalMs: number
+  private readonly host: string
   private readonly signal?: AbortSignal
 
   constructor(
@@ -90,13 +90,13 @@ export class YiciyuanClient {
     this.baseUrl = baseUrl.replace(/\/$/, '')
     this.ua = resolveRequestUserAgent(options?.userAgent)
     this.minIntervalMs = options?.minIntervalMs ?? 500
-    this.limiter = new IntervalLimiter(this.minIntervalMs)
+    this.host = hostKey(this.baseUrl)
     this.signal = options?.signal
   }
 
   private async getJson<T>(path: string): Promise<T> {
     try {
-      await this.limiter.waitTurn(this.signal)
+      await getHostLimiter(this.minIntervalMs).waitTurn(this.host, this.signal)
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         throw new AppError('CANCELLED', 'yiciyuan scrape cancelled')

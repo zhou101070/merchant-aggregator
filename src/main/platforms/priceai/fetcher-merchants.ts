@@ -1,6 +1,12 @@
 import { AppError } from '@shared/types/errors'
 import { createLogger } from '../../utils/logger'
 import { IntervalLimiter, sleep } from '../../services/rate-limiter'
+import {
+  findShopApiItemUrl,
+  hasParseableShopUrl,
+  resolveMerchantItemLinks,
+  type ItemShopResolver
+} from '../shopapi/resolve-item-shop'
 import type { NormalizedMerchantRow } from './normalize'
 import { hasMerchantExternalLink, normalizeMerchant } from './normalize'
 import { PriceaiClient } from './client'
@@ -13,7 +19,21 @@ export interface FetchAllMerchantsOptions {
   limit?: number
   intervalMs?: number
   signal?: AbortSignal
-  onProgress?: (p: { current: number; total: number; page: number }) => void
+  userAgent?: string
+  /** Inject item→shop resolver (tests); default hits shopApi goodsInfo. */
+  resolveItem?: ItemShopResolver
+  /**
+   * Called as soon as merchants are ready to persist (per page: immediate
+   * shop-home rows first, then item→shop resolved rows). Prefer this over
+   * waiting for the final result when writing to the DB.
+   */
+  onMerchantsReady?: (rows: NormalizedMerchantRow[]) => void
+  onProgress?: (p: {
+    current: number
+    total: number
+    page: number
+    phase?: 'pages' | 'resolve'
+  }) => void
 }
 
 export interface FetchAllMerchantsResult {
@@ -21,8 +41,10 @@ export interface FetchAllMerchantsResult {
   rows: NormalizedMerchantRow[]
   /** Unique merchant ids seen from API (before no-link drop) */
   fetchedUnique: number
-  /** Dropped because both shop_url and entry_url empty */
+  /** Dropped because both shop_url and entry_url empty, or item→shop failed */
   droppedNoLink: number
+  droppedItemUnresolved: number
+  resolvedFromItem: number
   /** Upstream page.total when known */
   total: number
   generatedAt: string | null
@@ -33,6 +55,14 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new AppError('CANCELLED', 'merchants fetch cancelled')
   }
+}
+
+/** Rows that already have a usable shop home / non-item external link. */
+function isReadyWithoutItemResolve(row: NormalizedMerchantRow): boolean {
+  return (
+    hasParseableShopUrl(row.shop_url, row.entry_url) ||
+    !findShopApiItemUrl(row.shop_url, row.entry_url)
+  )
 }
 
 /**
@@ -46,6 +76,9 @@ function throwIfAborted(signal?: AbortSignal): void {
  *
  * Transport failures (network/schema/degraded) retry same offset.
  * Protocol / completeness failures fail immediately (no silent partial success).
+ *
+ * Persistence: each page flushes ready rows via onMerchantsReady before the
+ * next page is requested (item-only rows flush after goodsInfo resolve).
  */
 export async function fetchAllMerchants(
   options: FetchAllMerchantsOptions = {}
@@ -60,6 +93,9 @@ export async function fetchAllMerchants(
   let pages = 0
   let generatedAt: string | null = null
   let consecutiveFailures = 0
+  let emptyLinkDropped = 0
+  let droppedItemUnresolved = 0
+  let resolvedFromItem = 0
 
   while (offset < total) {
     throwIfAborted(options.signal)
@@ -108,6 +144,7 @@ export async function fetchAllMerchants(
     generatedAt = page.generatedAt ?? generatedAt
     const fetchedAt = new Date().toISOString()
 
+    const pageLinked: NormalizedMerchantRow[] = []
     for (const raw of page.rows) {
       if (seen.has(raw.id)) continue
       seen.add(raw.id)
@@ -116,7 +153,48 @@ export async function fetchAllMerchants(
         generatedAt: page.generatedAt
       })
       // 无外链丢弃；分页完整性仍按上游 unique id 计数
-      if (hasMerchantExternalLink(row)) out.push(row)
+      if (hasMerchantExternalLink(row)) pageLinked.push(row)
+      else emptyLinkDropped += 1
+    }
+
+    // Flush shop-home / non-item rows immediately; item-only after goodsInfo.
+    const immediate: NormalizedMerchantRow[] = []
+    const needItem: NormalizedMerchantRow[] = []
+    for (const row of pageLinked) {
+      if (isReadyWithoutItemResolve(row)) immediate.push(row)
+      else needItem.push(row)
+    }
+
+    if (immediate.length) {
+      out.push(...immediate)
+      options.onMerchantsReady?.(immediate)
+    }
+
+    let flushedResolved = 0
+    if (needItem.length) {
+      const resolved = await resolveMerchantItemLinks(needItem, {
+        resolveItem: options.resolveItem,
+        userAgent: options.userAgent,
+        minIntervalMs: options.intervalMs,
+        signal: options.signal,
+        onProgress: (p) =>
+          options.onProgress?.({
+            current: Math.min(
+              seen.size - needItem.length + p.current,
+              Number.isFinite(total) ? total : seen.size
+            ),
+            total: Number.isFinite(total) ? total : seen.size,
+            page: pages,
+            phase: 'resolve'
+          })
+      })
+      droppedItemUnresolved += resolved.droppedItemUnresolved
+      resolvedFromItem += resolved.resolvedFromItem
+      flushedResolved = resolved.rows.length
+      if (resolved.rows.length) {
+        out.push(...resolved.rows)
+        options.onMerchantsReady?.(resolved.rows)
+      }
     }
 
     const unique = seen.size
@@ -132,7 +210,9 @@ export async function fetchAllMerchants(
       total: page.total,
       limited: page.limited,
       unique,
-      kept: out.length
+      kept: out.length,
+      flushedImmediate: immediate.length,
+      flushedResolved
     })
 
     // --- stop / continue (protocol checks: no silent early exit) ---
@@ -184,10 +264,19 @@ export async function fetchAllMerchants(
     )
   }
 
+  log.info('merchants done', {
+    kept: out.length,
+    droppedItemUnresolved,
+    resolvedFromItem,
+    emptyLinkDropped
+  })
+
   return {
     rows: out,
     fetchedUnique: unique,
-    droppedNoLink: unique - out.length,
+    droppedNoLink: emptyLinkDropped + droppedItemUnresolved,
+    droppedItemUnresolved,
+    resolvedFromItem,
     total: Number.isFinite(total) ? total : unique,
     generatedAt,
     pages

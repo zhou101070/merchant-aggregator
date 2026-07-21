@@ -9,6 +9,8 @@ export interface ShopApiEndpoints {
   info: string
   /** default '/shopApi/Shop/goodsList' */
   goodsList: string
+  /** default '/shopApi/Shop/goodsInfo' — goods_key → shop token/link */
+  goodsInfo: string
 }
 
 export type ShopProbeStatus = 'unverified' | 'ok' | 'degraded' | 'blocked'
@@ -46,7 +48,8 @@ export interface ShopSiteProfile {
 
 export const DEFAULT_SHOPAPI_ENDPOINTS: ShopApiEndpoints = {
   info: '/shopApi/Shop/info',
-  goodsList: '/shopApi/Shop/goodsList'
+  goodsList: '/shopApi/Shop/goodsList',
+  goodsInfo: '/shopApi/Shop/goodsInfo'
 }
 
 export function shopRootUrl(
@@ -66,7 +69,8 @@ export function itemPageUrl(
 export function resolveShopApiEndpoints(profile: ShopSiteProfile): ShopApiEndpoints {
   return {
     info: profile.endpoints?.info ?? DEFAULT_SHOPAPI_ENDPOINTS.info,
-    goodsList: profile.endpoints?.goodsList ?? DEFAULT_SHOPAPI_ENDPOINTS.goodsList
+    goodsList: profile.endpoints?.goodsList ?? DEFAULT_SHOPAPI_ENDPOINTS.goodsList,
+    goodsInfo: profile.endpoints?.goodsInfo ?? DEFAULT_SHOPAPI_ENDPOINTS.goodsInfo
   }
 }
 

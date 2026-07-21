@@ -10,15 +10,30 @@ export const DUJIAO_PLATFORM_ID = 'dujiao'
 /** Platform id + shop_products.source for 异次元/acg-faka 系 (PriceAI collector often `kami`). */
 export const YICIYUAN_PLATFORM_ID = 'yiciyuan'
 
+/** AutoPixel Next.js wholesale shops (path slug, e.g. /blackcat). */
+export const AUTOPIXEL_PLATFORM_ID = 'autopixel'
+
 /**
  * Site technology family for routing + UI.
- * Deep-scrape adapters today: shopapi + dujiao + yiciyuan.
+ * Deep-scrape adapters today: shopapi + dujiao + yiciyuan + autopixel.
  */
 export type ShopFamilyId =
-  ShopFamily | 'dujiao' | 'yiciyuan' | 'generic_html' | 'custom_api' | 'unknown'
+  | ShopFamily
+  | 'dujiao'
+  | 'yiciyuan'
+  | 'autopixel'
+  | 'generic_html'
+  | 'custom_api'
+  | 'unknown'
 
 /** Which scrape adapter path to take. */
-export type ScrapeStrategy = 'shopapi' | 'dujiao' | 'yiciyuan' | 'unsupported' | 'none'
+export type ScrapeStrategy =
+  | 'shopapi'
+  | 'dujiao'
+  | 'yiciyuan'
+  | 'autopixel'
+  | 'unsupported'
+  | 'none'
 
 export type IdentifyConfidence = 'high' | 'medium' | 'low'
 
@@ -202,6 +217,7 @@ const FAMILY_LABEL: Record<ShopFamilyId, string> = {
   shopapi: 'shopApi 白标',
   dujiao: '独角数卡',
   yiciyuan: '异次元发卡',
+  autopixel: 'AutoPixel 批发',
   generic_html: 'HTML 站',
   custom_api: '定制 API',
   unknown: '未知'
@@ -433,6 +449,20 @@ export function identifyShopPlatform(
       }
       return fromHostTokenFamily(hostFamily, storedToken, 'stored_ref')
     }
+    if (platformKey === AUTOPIXEL_PLATFORM_ID) {
+      return {
+        family: 'autopixel',
+        platformId: AUTOPIXEL_PLATFORM_ID,
+        token: storedToken.toLowerCase(),
+        scrapeStrategy: 'autopixel',
+        scrapable: true,
+        profileEnabled: true,
+        confidence: 'high',
+        source: 'stored_ref',
+        label: FAMILY_LABEL.autopixel,
+        reason: '可深刮（AutoPixel 批发）'
+      }
+    }
     const profile = findProfileById(storedPlatform, profiles)
     if (profile) return fromProfile(profile, storedToken, 'stored_ref')
     return unknownIdentity({
@@ -486,7 +516,9 @@ export function isIdentityScrapable(identity: ShopIdentity): boolean {
   return (
     identity.scrapable &&
     identity.profileEnabled &&
-    (identity.scrapeStrategy === 'shopapi' || isHostTokenScrapeStrategy(identity.scrapeStrategy)) &&
+    (identity.scrapeStrategy === 'shopapi' ||
+      isHostTokenScrapeStrategy(identity.scrapeStrategy) ||
+      identity.scrapeStrategy === 'autopixel') &&
     !!identity.platformId &&
     !!identity.token
   )
@@ -507,6 +539,10 @@ export function identityToScrapeRef(
   }
   if (isHostTokenScrapeStrategy(identity.scrapeStrategy)) {
     // Soft candidates (e.g. kami without fingerprint) keep family label but no scrape ref
+    if (!identity.scrapable || !identity.platformId || !identity.token) return null
+    return { platformId: identity.platformId, token: identity.token }
+  }
+  if (identity.scrapeStrategy === 'autopixel') {
     if (!identity.scrapable || !identity.platformId || !identity.token) return null
     return { platformId: identity.platformId, token: identity.token }
   }

@@ -17,6 +17,17 @@ describe('priceai merchants normalize', () => {
     expect(parsed.degraded).toBe(false)
   })
 
+  it('accepts live payload that omits degraded (defaults false)', () => {
+    const { degraded: _omit, ...withoutDegraded } = fixture as {
+      degraded?: boolean
+      [k: string]: unknown
+    }
+    void _omit
+    const parsed = priceaiMerchantsPageSchema.parse(withoutDegraded)
+    expect(parsed.degraded).toBe(false)
+    expect(parsed.rows).toHaveLength(2)
+  })
+
   it('derives ldxp shop ref from shop url', () => {
     expect(
       deriveShopRef({

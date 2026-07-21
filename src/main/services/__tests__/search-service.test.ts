@@ -728,6 +728,68 @@ describe('SearchService local-only shop_products', () => {
     }
   })
 
+  it('pure Latin word matches whole title token only (team ≠ steam / category)', () => {
+    const { db } = openDatabase({ filePath: ':memory:' })
+    try {
+      seedMerchants(db, [
+        { id: 'm1', name: '好店', token: 'TOK1' },
+        { id: 'm2', name: '接码店', token: 'TOK2' },
+        { id: 'm3', name: 'Steam店', token: 'TOK3' }
+      ])
+      seedProducts(db, [
+        {
+          id: 's1',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g1',
+          title: 'ChatGPT Team 月卡 成品',
+          price: 120
+        },
+        {
+          id: 's2',
+          merchantId: 'm1',
+          token: 'TOK1',
+          key: 'g2',
+          title: 'ChatGPT 团队版 年卡',
+          price: 200
+        },
+        {
+          id: 's3',
+          merchantId: 'm2',
+          token: 'TOK2',
+          key: 'g3',
+          title: 'Codex 接码 美区【单次接码】',
+          price: 2.19
+        },
+        {
+          id: 's4',
+          merchantId: 'm3',
+          token: 'TOK3',
+          key: 'g4',
+          title: 'Steam 成品号 质保',
+          price: 30
+        }
+      ])
+      // Category labels that mention team must not flood unrelated titles
+      db.prepare(
+        `UPDATE shop_products SET category_name = 'GPT 反代用（team、k12）' WHERE id = 's3'`
+      ).run()
+
+      const search = new SearchService(db)
+      const res = search.query({ q: 'team', sort: 'price', sortDir: 'asc', limit: 50, offset: 0 })
+      const titles = res.hits.map((h) => h.title)
+      expect(titles).toEqual(
+        expect.arrayContaining(['ChatGPT Team 月卡 成品', 'ChatGPT 团队版 年卡'])
+      )
+      expect(titles).toHaveLength(2)
+      expect(titles.some((t) => t.includes('接码'))).toBe(false)
+      expect(titles.some((t) => /steam/i.test(t))).toBe(false)
+      expect(res.total).toBe(2)
+    } finally {
+      closeDatabase(db)
+    }
+  })
+
   it('version token does not match shop id digits (grok7 vs shop 7878)', () => {
     const { db } = openDatabase({ filePath: ':memory:' })
     try {

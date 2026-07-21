@@ -45,8 +45,8 @@ export const SHOP_PROFILES: readonly ShopSiteProfile[] = [LDXP_PROFILE, CATFK_PR
  */
 export const SHOP_PLATFORM_OTHER = 'other'
 
-/** Non-profile scrapable platform ids (host-as-token families). */
-export const EXTRA_SCRAPABLE_PLATFORM_IDS = ['dujiao', 'yiciyuan'] as const
+/** Non-profile scrapable platform ids (host-as-token + path-token families). */
+export const EXTRA_SCRAPABLE_PLATFORM_IDS = ['dujiao', 'yiciyuan', 'autopixel'] as const
 
 export function knownShopPlatformIds(
   profiles: readonly ShopSiteProfile[] = SHOP_PROFILES

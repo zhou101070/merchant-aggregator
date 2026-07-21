@@ -4,6 +4,14 @@ export function shouldBlockMerchantAfterSyncFailure(opts: {
   code: string
   notFamily: boolean
   merchantId: string | null
+  /** Unknown-platform all-modes-failed: never auto-block. */
+  silentUnknown?: boolean
 }): boolean {
-  return opts.enabled && opts.code !== 'CANCELLED' && !opts.notFamily && Boolean(opts.merchantId)
+  return (
+    opts.enabled &&
+    opts.code !== 'CANCELLED' &&
+    !opts.notFamily &&
+    !opts.silentUnknown &&
+    Boolean(opts.merchantId)
+  )
 }

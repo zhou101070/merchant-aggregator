@@ -138,18 +138,19 @@ export function SearchPage(): React.JSX.Element {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const [q, setQ] = useState(() => searchParams.get('q') ?? '')
-  const [debounced, setDebounced] = useDebouncedValue(
-    q.trim(),
-    250
-  )
+  // 仅回车/芯片/深链提交；再经 250ms 防抖后真正搜（setDebounced 可立即 flush）
+  const [submitted, setSubmitted] = useState(() => (searchParams.get('q') ?? '').trim())
+  const [debounced, setDebounced] = useDebouncedValue(submitted, 250)
   // URL ?q= 变化时(收藏页「按标题搜」等深链)渲染期比较并接管输入
   const urlQ = searchParams.get('q')
   const [seenUrlQ, setSeenUrlQ] = useState(urlQ)
   if (urlQ !== seenUrlQ) {
     setSeenUrlQ(urlQ)
     if (urlQ != null) {
+      const t = urlQ.trim()
       setQ(urlQ)
-      setDebounced(urlQ.trim())
+      setSubmitted(t)
+      setDebounced(t)
     }
   }
   const [hits, setHits] = useState<SearchHit[]>([])
@@ -402,8 +403,10 @@ export function SearchPage(): React.JSX.Element {
   }
 
   function applySaved(s: SavedSearch): void {
+    const t = s.q.trim()
     setQ(s.q)
-    setDebounced(s.q.trim())
+    setSubmitted(t)
+    setDebounced(t)
     setTitleContains([...s.titleContains])
     setTitleExcludes([...s.titleExcludes])
     setInStockOnly(s.inStockOnly !== false)
@@ -413,6 +416,21 @@ export function SearchPage(): React.JSX.Element {
     setSort(s.sort)
     setSortDir(s.sortDir)
     setPage(0)
+  }
+
+  /** 回车提交：走 submitted → 250ms 防抖 → debounced → 搜索 */
+  function submitSearch(): void {
+    setSubmitted(q.trim())
+  }
+
+  /** 清空输入并立即回到无关键词浏览 */
+  function clearSearchInput(): void {
+    setQ('')
+    setSubmitted('')
+    setDebounced('')
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>('[data-search-input]')?.focus()
+    })
   }
 
   async function saveCurrentSearch(): Promise<void> {
@@ -567,13 +585,31 @@ export function SearchPage(): React.JSX.Element {
           <Input
             data-search-input
             className="search-input"
-            placeholder="搜货：Claude Pro / Outlook / GPT…"
-            aria-label="全局搜索"
+            placeholder="搜货：Claude Pro / Outlook / GPT…（回车）"
+            aria-label="全局搜索，回车搜索"
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                submitSearch()
+              }
+            }}
             autoFocus
           />
-          <Kbd>{searchHotkeyLabel()}</Kbd>
+          <span className="search-bar-trail">
+            {q ? (
+              <IconButton
+                type="button"
+                className="search-bar-clear"
+                label="清除搜索"
+                onClick={clearSearchInput}
+              >
+                <Icon name="close" size={14} />
+              </IconButton>
+            ) : null}
+            <Kbd>{searchHotkeyLabel()}</Kbd>
+          </span>
         </div>
         <div className="row" style={{ flexWrap: 'nowrap' }}>
           {sort !== 'score' ? (
@@ -666,6 +702,7 @@ export function SearchPage(): React.JSX.Element {
               on={debounced === term}
               onClick={() => {
                 setQ(term)
+                setSubmitted(term)
                 setDebounced(term)
               }}
             >

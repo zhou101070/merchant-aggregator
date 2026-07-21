@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 /**
- * Debounce a value (e.g. search box → query).
+ * Debounce a value (e.g. committed search query after Enter).
  * Second return flushes immediately (deep link / apply saved / chip click).
  */
 export function useDebouncedValue<T>(value: T, delayMs = 250): [T, (next: T) => void] {
