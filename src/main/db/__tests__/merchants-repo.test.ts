@@ -81,16 +81,16 @@ describe('MerchantsRepo incremental sync helpers', () => {
       })
       insertMerchant(db, { id: 'nonldxp', name: '非ldxp', offerCount: 999 })
 
-      const targets = repo.listScrapableNeedingSync({ freshHours: 24 })
+      const targets = repo.listScrapableNeedingSync({ freshMinutes: 24 * 60 })
       expect(targets.map((t) => t.id)).toEqual(['never', 'stale', 'failed']) // offer_count desc
       expect(targets.map((t) => t.id)).not.toContain('fresh')
       expect(targets.map((t) => t.id)).not.toContain('nonldxp')
 
-      const autoPool = repo.listScrapableNeedingSync({ freshHours: 24, excludeFailing: true })
+      const autoPool = repo.listScrapableNeedingSync({ freshMinutes: 24 * 60, excludeFailing: true })
       expect(autoPool.map((t) => t.id)).toEqual(['never', 'stale'])
       expect(autoPool.map((t) => t.id)).not.toContain('failed')
 
-      const top1 = repo.listScrapableNeedingSync({ freshHours: 24, limit: 1 })
+      const top1 = repo.listScrapableNeedingSync({ freshMinutes: 24 * 60, limit: 1 })
       expect(top1.map((t) => t.id)).toEqual(['never'])
 
       expect(repo.listScrapableMerchants().length).toBe(4)
@@ -126,12 +126,12 @@ describe('MerchantsRepo incremental sync helpers', () => {
         offerCount: 5
       })
 
-      const c = repo.candidatesForQuery('Claude Pro', 24)
+      const c = repo.candidatesForQuery('Claude Pro', 24 * 60)
       expect(c.totalMatching).toBe(2) // fresh + stale 都匹配关键词
       expect(c.merchantIds).toEqual(['claudeStale']) // 新鲜店不重复同步
       expect(c.sample).toEqual(['号铺'])
 
-      const none = repo.candidatesForQuery('   ', 24)
+      const none = repo.candidatesForQuery('   ', 24 * 60)
       expect(none.merchantIds).toEqual([])
       expect(none.totalMatching).toBe(0)
     } finally {

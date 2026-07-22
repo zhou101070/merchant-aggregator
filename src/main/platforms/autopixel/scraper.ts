@@ -15,6 +15,7 @@ export async function scrapeAutopixel(options: {
   merchantId?: string | null
   shopName?: string | null
   minIntervalMs?: number
+  userAgent?: string
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
 }): Promise<{
@@ -41,6 +42,7 @@ export async function scrapeAutopixel(options: {
 
   const client = new AutopixelClient(ref, {
     minIntervalMs: options.minIntervalMs,
+    userAgent: options.userAgent,
     signal: options.signal
   })
 

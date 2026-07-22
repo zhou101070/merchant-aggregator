@@ -7,6 +7,7 @@ import type { SavedSearch } from '@shared/types/saved-search'
 import type { SearchHit, SearchQuery } from '@shared/types/search'
 import { normalizeWordList } from '@shared/types/settings'
 import type { MerchantCandidates } from '@shared/types/merchant'
+import type { RefreshStockResult } from '@shared/types/product'
 import {
   Button,
   Chip,
@@ -42,6 +43,10 @@ const SPEC_CHIPS = ['质保', '直登', '成品', 'Pro', 'Plus', '邮箱', 'Clau
 const EXCLUDE_SUGGEST = ['共享', '合租', '拼车', '出租']
 const PAGE_SIZE_OPTIONS = [50, 100, 200] as const
 const DEFAULT_PAGE_SIZE = 100
+
+function isRefreshableHit(hit: SearchHit): boolean {
+  return hit.kind === 'shop_product' && Boolean(hit.platformId && hit.shopGoodsKey)
+}
 
 function parsePriceInput(raw: string): number | undefined {
   const t = raw.trim()
@@ -134,10 +139,12 @@ export function SearchPage(): React.JSX.Element {
     useSyncStatus()
   const confirm = useConfirm()
   const toast = useToast()
-  const { refreshingStockId, refreshStock } = useRefreshStock()
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const [q, setQ] = useState(() => searchParams.get('q') ?? '')
+
+  // refresh hook (full destructure because some usages were relying on old one)
+  const { refreshingStockId, batchProgress, refreshStock, refreshStockBatch, cancel } = useRefreshStock()
   // 仅回车/芯片/深链提交；再经 250ms 防抖后真正搜（setDebounced 可立即 flush）
   const [submitted, setSubmitted] = useState(() => (searchParams.get('q') ?? '').trim())
   const [debounced, setDebounced] = useDebouncedValue(submitted, 250)
@@ -175,7 +182,7 @@ export function SearchPage(): React.JSX.Element {
     key: string
     data: MerchantCandidates
   } | null>(null)
-  const [freshHours, setFreshHours] = useState(24)
+  const [freshMinutes, setFreshMinutes] = useState(24 * 60)
   const [recentSearches, setRecentSearches] = useState<string[]>([])
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([])
   const [selectedIdx, setSelectedIdx] = useState(-1)
@@ -197,7 +204,7 @@ export function SearchPage(): React.JSX.Element {
 
   useEffect(() => {
     void window.api.settings.get().then((s) => {
-      setFreshHours(s.shopFreshHours || 24)
+      setFreshMinutes(s.shopFreshMinutes || (s.shopFreshHours ? s.shopFreshHours * 60 : 24 * 60))
       setRecentSearches(s.recentSearches ?? [])
       setSavedSearches(s.savedSearches ?? [])
       setTitleExcludes(normalizeWordList(s.searchExcludeWords ?? []))
@@ -492,40 +499,61 @@ export function SearchPage(): React.JSX.Element {
     toast(`正在刷新店铺：${hit.merchantName ?? ref.token}，完成后自动重搜`)
   }
 
+  function applyStockResult(productId: string, res: RefreshStockResult): void {
+    if (res.status === 'updated') {
+      // 只看有货时，刷新后无货则从当前列表去掉
+      if (inStockOnly && !(typeof res.stock === 'number' && res.stock > 0)) {
+        setHits((prev) => prev.filter((h) => h.id !== productId))
+        setTotal((t) => Math.max(0, t - 1))
+        return
+      }
+      setHits((prev) =>
+        prev.map((h) =>
+          h.id === productId
+            ? {
+                ...h,
+                stockCount: res.stock,
+                price: res.product.price,
+                fetchedAt: res.product.fetchedAt,
+                status: typeof res.stock === 'number' && res.stock > 0 ? 'in_stock' : null
+              }
+            : h
+        )
+      )
+      return
+    }
+    if (res.status === 'removed' || res.status === 'not_found') {
+      setHits((prev) => prev.filter((h) => h.id !== productId))
+      setTotal((t) => Math.max(0, t - 1))
+    }
+  }
+
   function refreshHitStock(hit: SearchHit): void {
-    if (hit.kind !== 'shop_product' || !hit.platformId || !hit.shopGoodsKey) {
+    if (!isRefreshableHit(hit)) {
       toast('缺少商品信息，无法刷新库存', 'fail')
       return
     }
     void refreshStock(hit.id, {
-      onUpdated: (res) => {
-        // 只看有货时，刷新后无货则从当前列表去掉
-        if (inStockOnly && !(typeof res.stock === 'number' && res.stock > 0)) {
-          setHits((prev) => prev.filter((h) => h.id !== hit.id))
-          setTotal((t) => Math.max(0, t - 1))
-          return
-        }
-        setHits((prev) =>
-          prev.map((h) =>
-            h.id === hit.id
-              ? {
-                  ...h,
-                  stockCount: res.stock,
-                  price: res.product.price,
-                  fetchedAt: res.product.fetchedAt,
-                  status:
-                    typeof res.stock === 'number' && res.stock > 0 ? 'in_stock' : null
-                }
-              : h
-          )
-        )
-      },
-      onRemoved: () => {
-        setHits((prev) => prev.filter((h) => h.id !== hit.id))
-        setTotal((t) => Math.max(0, t - 1))
+      onUpdated: (res) => applyStockResult(hit.id, res),
+      onRemoved: (res) => applyStockResult(hit.id, res)
+    })
+  }
+
+  function refreshAllHitStocks(): void {
+    const ids = hits.filter(isRefreshableHit).map((h) => h.id)
+    if (ids.length === 0) {
+      toast('当前结果没有可刷新库存的商品', 'fail')
+      return
+    }
+    void refreshStockBatch(ids, {
+      onItem: (productId, res) => {
+        if (res) applyStockResult(productId, res)
       }
     })
   }
+
+  const stockBusy = batchProgress != null || refreshingStockId != null
+  const refreshableCount = useMemo(() => hits.filter(isRefreshableHit).length, [hits])
 
   function toggleChip(chip: string): void {
     setTitleContains((prev) =>
@@ -661,6 +689,31 @@ export function SearchPage(): React.JSX.Element {
           >
             保存当前
           </Button>
+          {hits.length > 0 ? (
+            <Button
+              variant="ghost"
+              size="s"
+              loading={batchProgress != null}
+              disabled={stockBusy || refreshableCount === 0}
+              onClick={refreshAllHitStocks}
+              title="按商品刷新当前页结果库存（非整店）"
+            >
+              {batchProgress
+                ? `刷新中 ${batchProgress.current}/${batchProgress.total}`
+                : '刷新库存'}
+              {batchProgress && (
+                <IconButton
+                  label="取消库存刷新"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    cancel()
+                  }}
+                >
+                  ×
+                </IconButton>
+              )}
+            </Button>
+          ) : null}
           <IconButton label="导出 CSV" onClick={exportCsv} disabled={!hits.length}>
             <Icon name="download" />
           </IconButton>
@@ -898,7 +951,7 @@ export function SearchPage(): React.JSX.Element {
                   </thead>
                   <tbody>
                     {hits.map((hit, idx) => {
-                      const stale = isStale(hit.fetchedAt, freshHours)
+                      const stale = isStale(hit.fetchedAt, freshMinutes)
                       const isLowest =
                         minPrice != null && hit.price != null && hit.price === minPrice
                       const selected = idx === selectedIdx
@@ -980,17 +1033,30 @@ export function SearchPage(): React.JSX.Element {
                                   店铺
                                 </button>
                               ) : null}
-                              {hit.kind === 'shop_product' && hit.platformId && hit.shopGoodsKey ? (
+                              {isRefreshableHit(hit) ? (
                                 <button
                                   className="linkish"
-                                  disabled={refreshingStockId === hit.id}
+                                  disabled={stockBusy}
                                   title="按商品刷新库存（非整店）"
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     refreshHitStock(hit)
                                   }}
                                 >
-                                  {refreshingStockId === hit.id ? '刷新中…' : '刷新库存'}
+                                  {refreshingStockId === hit.id
+                                    ? '刷新中…'
+                                    : '刷新库存'}
+                                  {refreshingStockId === hit.id && (
+                                    <IconButton
+                                      label="取消此商品库存刷新"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        cancel()
+                                      }}
+                                    >
+                                      ×
+                                    </IconButton>
+                                  )}
                                 </button>
                               ) : null}
                               <button

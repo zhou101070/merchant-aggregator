@@ -60,7 +60,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   )
   ipcMain.handle(IPC_CHANNELS.merchantsCandidates, async (_e, req: { q: string }) => {
     const settings = ctx.repos.settings.get()
-    return ctx.repos.merchants.candidatesForQuery(req?.q ?? '', settings.shopFreshHours)
+    return ctx.repos.merchants.candidatesForQuery(req?.q ?? '', settings.shopFreshMinutes)
   })
 
   ipcMain.handle(IPC_CHANNELS.shopProductsList, async (_e, query: ShopProductListQuery) =>
@@ -176,7 +176,9 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       (partial.autoRefreshEnabled !== undefined ||
         partial.autoRefreshMinIntervalMs !== undefined ||
         partial.autoRefreshMaxIntervalMs !== undefined ||
-        partial.shopFreshHours !== undefined)
+        partial.shopFreshHours !== undefined ||
+        partial.shopFreshMinutes !== undefined ||
+        partial.shopFreshUnit !== undefined)
     ) {
       ctx.autoRefresh.reschedule()
     }

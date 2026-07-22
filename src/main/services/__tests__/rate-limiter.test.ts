@@ -4,6 +4,7 @@ import {
   IntervalLimiter,
   mapWithConcurrency,
   pageStartGapMs,
+  parseRetryAfterMs,
   PerHostIntervalLimiter,
   PerNodeIntervalLimiter,
   resetHostLimiterForTests,
@@ -23,6 +24,16 @@ describe('sleep abort', () => {
     const p = sleep(5000, c.signal)
     c.abort()
     await expect(p).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+describe('parseRetryAfterMs', () => {
+  it('parses seconds and HTTP dates', () => {
+    expect(parseRetryAfterMs('12')).toBe(12_000)
+    expect(parseRetryAfterMs('Wed, 22 Jul 2026 10:00:10 GMT', Date.parse('2026-07-22T10:00:00Z'))).toBe(
+      10_000
+    )
+    expect(parseRetryAfterMs('nope')).toBeNull()
   })
 })
 
@@ -105,6 +116,27 @@ describe('PerHostIntervalLimiter', () => {
     await lim.acquire(['a'])
     expect(Date.now() - t0).toBeGreaterThanOrEqual(150)
     expect(lim.peekNextAt('b')).toBe(0)
+  })
+
+  it('honors the larger interval when adjacent callers use different policies', async () => {
+    const schedules = new Map<
+      string,
+      { lastAt: number; lastIntervalMs: number; blockedUntil: number }
+    >()
+    const slow = new PerHostIntervalLimiter(120, schedules)
+    const fast = new PerHostIntervalLimiter(20, schedules)
+    await slow.waitTurn('mixed.example')
+    const start = Date.now()
+    await fast.waitTurn('mixed.example')
+    expect(Date.now() - start).toBeGreaterThanOrEqual(85)
+  })
+
+  it('defers a host after a server-requested cooldown', async () => {
+    const lim = new PerHostIntervalLimiter(0)
+    lim.defer('cooldown.example', 100)
+    const start = Date.now()
+    await lim.waitTurn('cooldown.example')
+    expect(Date.now() - start).toBeGreaterThanOrEqual(70)
   })
 
   it('aliases still work', async () => {

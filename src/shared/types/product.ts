@@ -35,6 +35,11 @@ export interface RefreshStockRequest {
 
 export type RefreshStockResult =
   | { status: 'updated'; productId: string; stock: number; product: ShopProduct }
+  /** 店内找不到或已下架：本地记录已删除 */
   | { status: 'removed'; productId: string; stock: number | null }
+  /**
+   * @deprecated Prefer `removed` (service deletes local row on miss).
+   * Kept for older IPC clients; renderer treats it like removed.
+   */
   | { status: 'not_found'; productId: string }
 

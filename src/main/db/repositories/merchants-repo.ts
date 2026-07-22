@@ -59,8 +59,9 @@ const LOCAL_COUNT_COL = `(
   SELECT COUNT(*) FROM shop_products sp WHERE sp.merchant_id = merchants.id
 ) AS local_product_count`
 
-function freshCutoff(freshHours: number): string {
-  return new Date(Date.now() - freshHours * 3_600_000).toISOString()
+/** @param freshMinutes 旧数据阈值（分钟） */
+function freshCutoff(freshMinutes: number): string {
+  return new Date(Date.now() - freshMinutes * 60_000).toISOString()
 }
 
 /** Scrapable = shop_platform + shop_token present (PR2 forced). */
@@ -409,7 +410,8 @@ export class MerchantsRepo {
   }
 
   listScrapableNeedingSync(opts: {
-    freshHours: number
+    /** 旧数据阈值（分钟） */
+    freshMinutes: number
     limit?: number
     /** Only these platform ids (e.g. enabled profiles) */
     platformIds?: string[]
@@ -419,7 +421,7 @@ export class MerchantsRepo {
     excludeFailing?: boolean
   }): ScrapableMerchant[] {
     const limitSql = opts.limit ? `LIMIT ${Math.max(1, Math.floor(opts.limit))}` : ''
-    const params: Record<string, unknown> = { cutoff: freshCutoff(opts.freshHours) }
+    const params: Record<string, unknown> = { cutoff: freshCutoff(opts.freshMinutes) }
     let platformFilter = ''
     if (opts.platformIds?.length) {
       const keys = opts.platformIds.map((id, i) => {
@@ -452,11 +454,11 @@ export class MerchantsRepo {
     }))
   }
 
-  candidatesForQuery(q: string, freshHours: number): MerchantCandidates {
+  candidatesForQuery(q: string, freshMinutes: number): MerchantCandidates {
     const tokens = tokenizeQuery(q).slice(0, 5)
     if (!tokens.length) return { merchantIds: [], totalMatching: 0, sample: [] }
 
-    const params: Record<string, unknown> = { cutoff: freshCutoff(freshHours) }
+    const params: Record<string, unknown> = { cutoff: freshCutoff(freshMinutes) }
     const tokenClauses = tokens.map((t, i) => {
       params[`t${i}`] = likeContains(t)
       const f = `@t${i}`

@@ -1,8 +1,14 @@
 import { AppError } from '@shared/types/errors'
+import { appErrorFromAbort, isAbortError } from '../../utils/abort'
 import { createLogger } from '../../utils/logger'
 import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
 import { getHostLimiter, hostKey } from '../../services/rate-limiter'
-import { browserJsonGetHeaders, resolveRequestUserAgent } from '../../utils/request-headers'
+import {
+  browserCorsApiHeaders,
+  browserDocumentHeaders,
+  browserScriptHeaders,
+  resolveRequestUserAgent
+} from '../../utils/request-headers'
 
 const log = createLogger('autopixel')
 
@@ -164,9 +170,7 @@ export class AutopixelClient {
     try {
       await getHostLimiter(this.minIntervalMs).waitTurn(this.host, this.signal)
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'autopixel scrape cancelled')
-      }
+      if (isAbortError(err)) throw appErrorFromAbort(this.signal, 'autopixel scrape')
       throw err
     }
   }
@@ -177,9 +181,8 @@ export class AutopixelClient {
     try {
       res = await mainFetch(url, { method: 'GET', headers, signal: this.signal })
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'autopixel scrape cancelled')
-      }
+      if (err instanceof AppError) throw err
+      if (isAbortError(err)) throw appErrorFromAbort(this.signal, 'autopixel scrape')
       throw new AppError('NETWORK', `autopixel fetch failed: ${String(err)}`, {
         url,
         ...fetchErrorDetails(err)
@@ -198,16 +201,10 @@ export class AutopixelClient {
 
   /** Discover Next server action id for wholesale product list from page chunks. */
   async discoverWholesaleActionId(): Promise<string> {
-    const pageHeaders = browserJsonGetHeaders({
-      userAgent: this.ua,
-      origin: this.ref.baseUrl,
-      referer: this.ref.shopPageUrl,
-      fetchSite: 'none'
-    })
-    // HTML navigation — Accept */* is fine
-    pageHeaders['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-
-    const html = await this.getText(this.ref.shopPageUrl, pageHeaders)
+    const html = await this.getText(
+      this.ref.shopPageUrl,
+      browserDocumentHeaders({ userAgent: this.ua })
+    )
     const fromHtml = extractWholesaleActionId(html)
     if (fromHtml) return fromHtml
 
@@ -225,11 +222,10 @@ export class AutopixelClient {
       const url = path.startsWith('http') ? path : `${this.ref.baseUrl}${path}`
       let js: string
       try {
-        js = await this.getText(url, {
-          'User-Agent': this.ua,
-          Accept: '*/*',
-          Referer: this.ref.shopPageUrl
-        })
+        js = await this.getText(
+          url,
+          browserScriptHeaders({ userAgent: this.ua, referer: this.ref.shopPageUrl })
+        )
       } catch {
         continue
       }
@@ -250,14 +246,14 @@ export class AutopixelClient {
   async fetchWholesaleProducts(actionId: string): Promise<AutopixelProduct[]> {
     await this.waitTurn()
     const url = this.ref.shopPageUrl
-    const headers: Record<string, string> = {
-      'User-Agent': this.ua,
-      Accept: 'text/x-component',
-      'Content-Type': 'text/plain;charset=UTF-8',
-      'Next-Action': actionId,
-      Origin: this.ref.baseUrl,
-      Referer: this.ref.shopPageUrl
-    }
+    const headers = browserCorsApiHeaders({
+      userAgent: this.ua,
+      origin: this.ref.baseUrl,
+      referer: this.ref.shopPageUrl,
+      contentType: 'text/plain;charset=UTF-8'
+    })
+    headers.Accept = 'text/x-component'
+    headers['Next-Action'] = actionId
 
     let res: Response
     try {
@@ -268,9 +264,8 @@ export class AutopixelClient {
         signal: this.signal
       })
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'autopixel scrape cancelled')
-      }
+      if (err instanceof AppError) throw err
+      if (isAbortError(err)) throw appErrorFromAbort(this.signal, 'autopixel scrape')
       throw new AppError('NETWORK', `autopixel action fetch failed: ${String(err)}`, {
         url,
         ...fetchErrorDetails(err)

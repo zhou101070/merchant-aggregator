@@ -1,4 +1,5 @@
 import { AppError } from '@shared/types/errors'
+import { appErrorFromAbort, isAbortError } from '../../utils/abort'
 import { createLogger } from '../../utils/logger'
 import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
 import { getHostLimiter, hostKey } from '../../services/rate-limiter'
@@ -127,9 +128,7 @@ export class DujiaoClient {
     try {
       await getHostLimiter(this.minIntervalMs).waitTurn(this.host, this.signal)
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'dujiao scrape cancelled')
-      }
+      if (isAbortError(err)) throw appErrorFromAbort(this.signal, 'dujiao scrape')
       throw err
     }
     const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`
@@ -145,9 +144,8 @@ export class DujiaoClient {
     try {
       res = await mainFetch(url, { method: 'GET', headers, signal: this.signal })
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'dujiao scrape cancelled')
-      }
+      if (err instanceof AppError) throw err
+      if (isAbortError(err)) throw appErrorFromAbort(this.signal, 'dujiao scrape')
       throw new AppError('NETWORK', `dujiao fetch failed: ${String(err)}`, {
         path,
         url,

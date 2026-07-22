@@ -62,5 +62,17 @@ describe('shouldBlockMerchantAfterSyncFailure', () => {
       })
     ).toBe(false)
   })
-})
 
+  it('never blocks a challenge or host rate-limit response', () => {
+    for (const code of ['NEED_BROWSER', 'RATE_LIMIT']) {
+      expect(
+        shouldBlockMerchantAfterSyncFailure({
+          enabled: true,
+          code,
+          notFamily: false,
+          merchantId: 'm1'
+        })
+      ).toBe(false)
+    }
+  })
+})

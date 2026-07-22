@@ -2,9 +2,9 @@ import type { SavedSearch } from './types/saved-search'
 import type { AppSettings } from './types/settings'
 
 /**
- * Default PriceAI UA override in settings.
- * Empty → main process uses resolveRequestUserAgent() (desktop Chrome).
- * Non-empty custom string is sent as-is.
+ * Shared outbound UA override (legacy setting key kept for compatibility).
+ * Empty or identifiable/app-like values resolve to the local desktop Chrome UA;
+ * valid Mozilla desktop browser values are retained.
  */
 export const DEFAULT_PRICEAI_UA = ''
 
@@ -16,6 +16,13 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   networkPaused: false,
   priceaiUa: DEFAULT_PRICEAI_UA,
   requestIntervalMs: 500,
+  /** 默认 24 小时 */
+  shopFreshMinutes: 24 * 60,
+  /** 设置页单位选择 */
+  shopFreshUnit: 'hours',
+  /**
+   * @deprecated dual-fill with shopFreshMinutes / 60
+   */
   shopFreshHours: 24,
   shopMinIntervalMs: 500,
   /** ShopAPI 分页并发固定为 1（不再暴露设置） */
@@ -39,10 +46,16 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   savedSearches: [] as SavedSearch[]
 }
 
-/** Auto-refresh interval clamp (ms). */
+/** Auto-refresh interval clamp (ms). UI edits in whole seconds. */
 export const AUTO_REFRESH_LIMITS = {
-  minIntervalMs: { min: 60_000, max: 24 * 60 * 60_000, default: 3 * 60_000 },
-  maxIntervalMs: { min: 60_000, max: 24 * 60 * 60_000, default: 12 * 60_000 }
+  minIntervalMs: { min: 1_000, max: 24 * 60 * 60_000, default: 3 * 60_000 },
+  maxIntervalMs: { min: 1_000, max: 24 * 60 * 60_000, default: 12 * 60_000 }
+} as const
+
+/** 旧数据阈值：规范存分钟；设置页可选分钟/小时。 */
+export const SHOP_FRESH_LIMITS = {
+  /** 1 分钟 ～ 30 天 */
+  minutes: { min: 1, max: 24 * 30 * 60, default: 24 * 60 }
 } as const
 
 export const RATE_LIMITS = {
@@ -57,7 +70,10 @@ export const RATE_LIMITS = {
    */
   maxHostParallel: 8,
   requestTimeoutMs: 25_000,
-  maxRetries: 3,
+  /** Extra attempts after the first request; only transient/5xx errors qualify. */
+  maxRetries: 2,
+  /** Conservative host cooldown when a 429 omits Retry-After. */
+  rateLimitFallbackMs: 30_000,
   circuitBreakerFailures: 5
 } as const
 

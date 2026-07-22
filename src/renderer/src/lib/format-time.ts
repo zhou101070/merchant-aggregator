@@ -14,10 +14,10 @@ export function timeAgo(iso: string | null | undefined): string {
   return new Date(t).toLocaleDateString()
 }
 
-/** 数据是否超过新鲜期(缺时间戳视为过期) */
-export function isStale(iso: string | null | undefined, freshHours: number): boolean {
+/** 数据是否超过新鲜期(缺时间戳视为过期)。freshMinutes：旧数据阈值（分钟）。 */
+export function isStale(iso: string | null | undefined, freshMinutes: number): boolean {
   if (!iso) return true
   const t = new Date(iso).getTime()
   if (!Number.isFinite(t)) return true
-  return Date.now() - t > freshHours * 3_600_000
+  return Date.now() - t > freshMinutes * 60_000
 }

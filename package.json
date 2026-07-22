@@ -16,21 +16,19 @@
     "build": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3",
     "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "pnpm run build && electron-builder --win",
+    "build:win": "node scripts/build-win.mjs",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
     "test": "node scripts/run-tests.mjs",
     "test:watch": "vitest",
     "rebuild:native:node": "pnpm rebuild better-sqlite3",
-    "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3"
+    "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3",
+    "rebuild:native:win-x64": "electron-rebuild -f -o better-sqlite3 --platform win32 --arch x64"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "@fontsource/ibm-plex-mono": "^5.2.7",
     "better-sqlite3": "^12.11.1",
-    "react-router-dom": "^7.18.1",
-    "undici": "^8.7.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -38,6 +36,7 @@
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@electron/rebuild": "^4.2.0",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.7",
@@ -53,6 +52,7 @@
     "prettier": "^3.7.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
+    "react-router-dom": "^7.18.1",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
     "vitest": "^3.2.7"

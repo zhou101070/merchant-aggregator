@@ -168,7 +168,7 @@ export class AutoRefreshScheduler {
     }
 
     const pool = this.repos.merchants.listScrapableNeedingSync({
-      freshHours: settings.shopFreshHours,
+      freshMinutes: settings.shopFreshMinutes,
       platformIds: [platformId],
       // 失败店留给用户手动重试；成功前不再被后台随机抽到
       excludeFailing: true

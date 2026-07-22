@@ -1,6 +1,7 @@
-import '@fontsource/ibm-plex-mono/400.css'
-import '@fontsource/ibm-plex-mono/500.css'
-import '@fontsource/ibm-plex-mono/600.css'
+// 仅 latin:数字/英文等宽;中文 UI 走系统字体栈。少打 ~200KB 子集
+import '@fontsource/ibm-plex-mono/latin-400.css'
+import '@fontsource/ibm-plex-mono/latin-500.css'
+import '@fontsource/ibm-plex-mono/latin-600.css'
 import './styles/tokens.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'

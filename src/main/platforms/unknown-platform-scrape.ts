@@ -141,9 +141,9 @@ export function isSilentUnknownFailure(err: unknown): boolean {
 }
 
 function isCancelled(err: unknown): boolean {
-  if (err instanceof AppError && err.code === 'CANCELLED') return true
-  if (err instanceof Error && err.name === 'AbortError') return true
-  return false
+  // Do not treat bare AbortError as cancel — request timeout also aborts.
+  // mainFetch maps timeout → TIMEOUT; only explicit CANCELLED / job abort remain.
+  return err instanceof AppError && err.code === 'CANCELLED'
 }
 
 function attemptError(mode: string, err: unknown): UnknownScrapeAttempt {
@@ -165,6 +165,7 @@ function attemptError(mode: string, err: unknown): UnknownScrapeAttempt {
 export async function scrapeUnknownPlatformTrials(opts: {
   target: ShopScrapeTarget
   minIntervalMs: number
+  userAgent?: string
   pageConcurrency?: number
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
@@ -211,6 +212,7 @@ export async function scrapeUnknownPlatformTrials(opts: {
             token: shopApiToken,
             merchantId: target.merchantId,
             minIntervalMs,
+            userAgent: opts.userAgent,
             pageConcurrency,
             signal,
             onProgress: opts.onProgress
@@ -231,6 +233,7 @@ export async function scrapeUnknownPlatformTrials(opts: {
           baseUrl,
           merchantId: target.merchantId,
           minIntervalMs,
+          userAgent: opts.userAgent,
           signal,
           onProgress: opts.onProgress
         })
@@ -246,6 +249,7 @@ export async function scrapeUnknownPlatformTrials(opts: {
           merchantId: target.merchantId,
           shopName: target.shopName,
           minIntervalMs,
+          userAgent: opts.userAgent,
           signal,
           onProgress: opts.onProgress
         })
@@ -266,6 +270,7 @@ export async function scrapeUnknownPlatformTrials(opts: {
           merchantId: target.merchantId,
           shopName: target.shopName,
           minIntervalMs,
+          userAgent: opts.userAgent,
           signal,
           onProgress: opts.onProgress
         })
@@ -327,6 +332,10 @@ export async function scrapeUnknownPlatformTrials(opts: {
       }
     } catch (err) {
       if (isCancelled(err)) throw err
+      // A challenge is actionable in the foreground. Do not hide it behind
+      // the silent unknown-platform fallback or the WAF recovery flow cannot
+      // offer the user a chance to clear it.
+      if (err instanceof AppError && err.code === 'NEED_BROWSER') throw err
       const a = attemptError(m.mode, err)
       attempts.push(a)
       log.info('unknown platform trial miss', {

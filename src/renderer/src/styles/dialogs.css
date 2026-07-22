@@ -130,9 +130,10 @@ dialog.dialog.dialog-merchant .dialog-body,
   margin-top: 10px;
 }
 .merchant-products-title {
-  display: inline-flex;
-  align-items: baseline;
+  display: flex;
+  align-items: center;
   gap: 8px;
+  width: 100%;
   min-width: 0;
   margin: 0 0 8px;
 }
@@ -143,6 +144,10 @@ dialog.dialog.dialog-merchant .dialog-body,
 .merchant-products-title .sub {
   font-size: var(--text-s);
   color: var(--ink-2);
+}
+.merchant-products-title .in-stock-toggle {
+  margin-left: auto;
+  flex: none;
 }
 .merchant-product-search {
   display: flex;

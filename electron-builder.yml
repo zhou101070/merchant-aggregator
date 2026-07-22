@@ -3,23 +3,69 @@ appId: com.merchant-aggregator
 productName: Merchant Aggregator
 directories:
   buildResources: build
+
+# 安装包压缩; maximum 略增打包时间、略减体积
+compression: maximum
+
+# 裁掉 Windows 上未使用的 Chromium 附属 DLL(WebGPU / 软件 Vulkan)
+afterPack: scripts/after-pack.mjs
+
+# Electron 自带 50+ 语言包(~44MB)。产品 UI 为中文,保留中/英即可
+electronLanguages:
+  - en-US
+  - zh-CN
+
 files:
   - '!**/.vscode/*'
-  - '!src/*'
+  - '!src{,/**/*}'
+  - '!docs{,/**/*}'
+  - '!scripts{,/**/*}'
+  - '!AGENTS.md'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,vitest.config.ts}'
+  - '!**/*.{md,map,tsbuildinfo}'
+  - '!**/{test,tests,__tests__,example,examples,docs}{,/**/*}'
+  # better-sqlite3: 运行时只要 lib + better_sqlite3.node(源码/编译中间产物 ~20MB 不要)
+  - '!**/node_modules/better-sqlite3/deps{,/**/*}'
+  - '!**/node_modules/better-sqlite3/src{,/**/*}'
+  - '!**/node_modules/better-sqlite3/binding.gyp'
+  - '!**/node_modules/better-sqlite3/build/Release/obj{,/**/*}'
+  - '!**/node_modules/better-sqlite3/build/Release/*.a'
+  - '!**/node_modules/better-sqlite3/build/Release/test_extension.node'
+  - '!**/node_modules/better-sqlite3/build/deps{,/**/*}'
+  # better-sqlite3 安装期依赖,运行时不需要
+  - '!**/node_modules/{prebuild-install,node-abi,napi-build-utils,simple-get,simple-concat,tar-fs,tar-stream,tunnel-agent,rc,deep-extend,ini,minimist,expand-template,github-from-package,mkdirp-classic,chownr,fs-constants,pump,end-of-stream,once,wrappy,bl,buffer,base64-js,ieee754,readable-stream,string_decoder,safe-buffer,util-deprecate,mimic-response,decompress-response,strip-json-comments,detect-libc,semver}{,/**/*}'
+  # 已由 Vite 打进 renderer 的前端依赖(即使误留在 dependencies 也排除)
+  - '!**/node_modules/@fontsource{,/**/*}'
+  - '!**/node_modules/react-router{,/**/*}'
+  - '!**/node_modules/react-router-dom{,/**/*}'
+  # zod / undici 由 electron-vite 打进 main bundle,无需整包进 asar
+  - '!**/node_modules/zod{,/**/*}'
+  - '!**/node_modules/undici{,/**/*}'
+
+# smartUnpack 会把整包 native 模块掏出;关掉后精确控制
+# better-sqlite3 整包解压(已在 files 里裁到 lib+.node),避免 .node 同时进 asar 与 unpacked
+asar:
+  smartUnpack: false
 asarUnpack:
   - resources/**
+  - '**/node_modules/better-sqlite3/**/*'
+
 win:
   executableName: merchant-aggregator
   icon: build/icon.ico
+  # 固定 x64:在 Apple Silicon 上默认会打成 arm64,与常见 Windows PC 不匹配
+  target:
+    - target: nsis
+      arch:
+        - x64
 nsis:
   # 引导式安装器:逐页向导(安装范围 → 安装目录 → 进度 → 完成页),而非双击即装
   oneClick: false
   allowToChangeInstallationDirectory: true
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: ${name}-${version}-x64-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always

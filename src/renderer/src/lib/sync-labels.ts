@@ -89,7 +89,9 @@ export function formatJobUserMessage(job: {
   const failed = isFailedStatus(job.status)
 
   if (msg === 'starting') return '启动中'
-  if (msg === 'cancelled by user') return '已取消'
+  if (msg === 'cancelled by user') return '用户取消'
+  if (msg === 'app restarted; previous sync interrupted') return '应用退出，任务已中断'
+  if (msg === 'cancelled' || msg === 'shop request cancelled') return '已取消'
 
   const allOk = msg.match(/^synced (\d+) shops(?:, skipped (\d+) fresh)?$/)
   if (allOk) {

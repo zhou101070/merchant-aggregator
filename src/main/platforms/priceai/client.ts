@@ -10,6 +10,7 @@ export interface PriceaiClientOptions {
   baseUrl?: string
   /** Empty / omit → desktop Chrome UA (same resolver as shopApi). */
   userAgent?: string
+  minIntervalMs?: number
   http?: HttpClient
 }
 
@@ -23,20 +24,22 @@ export class PriceaiClient {
     this.http =
       options.http ??
       new HttpClient({
-        userAgent: resolveRequestUserAgent(options.userAgent)
+        userAgent: resolveRequestUserAgent(options.userAgent),
+        minIntervalMs: options.minIntervalMs
       })
   }
 
   async fetchMerchantsPage(params: {
     limit: number
     offset: number
+    signal?: AbortSignal
   }): Promise<PriceaiMerchantsPageParsed> {
     const qs = new URLSearchParams({
       limit: String(params.limit),
       offset: String(params.offset)
     })
     const url = `${this.baseUrl}/api/merchants?${qs.toString()}`
-    const { body } = await this.http.getJson(url)
+    const { body } = await this.http.getJson(url, params.signal)
     const parsed = priceaiMerchantsPageSchema.safeParse(body)
     if (!parsed.success) {
       throw new AppError('SCHEMA_VALIDATION', 'merchants page failed zod validation', {

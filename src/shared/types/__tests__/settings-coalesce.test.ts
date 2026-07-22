@@ -22,6 +22,24 @@ describe('coalesceAppSettings', () => {
     ).toBe(false)
   })
 
+  it('coerces shop fresh threshold from minutes or legacy hours', () => {
+    const fromHours = coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopFreshHours: 2 })
+    expect(fromHours.shopFreshMinutes).toBe(120)
+    expect(fromHours.shopFreshHours).toBe(2)
+    expect(fromHours.shopFreshUnit).toBe('hours')
+
+    const fromMinutes = coalesceAppSettings(DEFAULT_APP_SETTINGS, {
+      shopFreshMinutes: 45,
+      shopFreshUnit: 'minutes'
+    })
+    expect(fromMinutes.shopFreshMinutes).toBe(45)
+    expect(fromMinutes.shopFreshHours).toBe(0.75)
+    expect(fromMinutes.shopFreshUnit).toBe('minutes')
+
+    const clamped = coalesceAppSettings(DEFAULT_APP_SETTINGS, { shopFreshMinutes: 0 })
+    expect(clamped.shopFreshMinutes).toBe(1)
+  })
+
   it('keeps auto refresh opt-in and clamps its interval pair', () => {
     const defaults = coalesceAppSettings(DEFAULT_APP_SETTINGS, null)
     expect(defaults.autoRefreshEnabled).toBe(false)

@@ -43,6 +43,7 @@ export interface ShopScraper {
   scrape(opts: {
     target: ShopScrapeTarget
     minIntervalMs: number
+    userAgent?: string
     pageConcurrency?: number
     signal?: AbortSignal
     onProgress?: (p: { current: number; total: number; phase: string }) => void
@@ -73,6 +74,7 @@ const shopApiScraper: ShopScraper = {
       token: opts.target.token,
       merchantId: opts.target.merchantId,
       minIntervalMs: opts.minIntervalMs,
+      userAgent: opts.userAgent,
       pageConcurrency: opts.pageConcurrency,
       signal: opts.signal,
       onProgress: opts.onProgress
@@ -87,6 +89,7 @@ const dujiaoScraper: ShopScraper = {
       baseUrl: opts.target.baseUrl,
       merchantId: opts.target.merchantId,
       minIntervalMs: opts.minIntervalMs,
+      userAgent: opts.userAgent,
       signal: opts.signal,
       onProgress: opts.onProgress
     })
@@ -101,6 +104,7 @@ const yiciyuanScraper: ShopScraper = {
       merchantId: opts.target.merchantId,
       shopName: opts.target.shopName,
       minIntervalMs: opts.minIntervalMs,
+      userAgent: opts.userAgent,
       signal: opts.signal,
       onProgress: opts.onProgress
     })
@@ -117,6 +121,7 @@ const autopixelScraper: ShopScraper = {
       merchantId: opts.target.merchantId,
       shopName: opts.target.shopName,
       minIntervalMs: opts.minIntervalMs,
+      userAgent: opts.userAgent,
       signal: opts.signal,
       onProgress: opts.onProgress
     })
@@ -199,6 +204,7 @@ export function scraperForIdentity(identity: ShopIdentity): ShopScraper {
 export async function scrapeShopTarget(options: {
   target: ShopScrapeTarget
   minIntervalMs?: number
+  userAgent?: string
   pageConcurrency?: number
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
@@ -228,6 +234,7 @@ export async function scrapeShopTarget(options: {
     const result = await scrapeUnknownPlatformTrials({
       target: options.target,
       minIntervalMs: options.minIntervalMs ?? 500,
+      userAgent: options.userAgent,
       pageConcurrency: options.pageConcurrency,
       signal: options.signal,
       onProgress: options.onProgress,
@@ -245,6 +252,7 @@ export async function scrapeShopTarget(options: {
   return scraperForIdentity(identity).scrape({
     target: options.target,
     minIntervalMs: options.minIntervalMs ?? 500,
+    userAgent: options.userAgent,
     pageConcurrency: options.pageConcurrency,
     signal: options.signal,
     onProgress: options.onProgress

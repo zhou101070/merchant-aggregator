@@ -20,6 +20,8 @@ describe('AutoRefreshScheduler in-flight guard', () => {
     ])
     const getSettings = vi.fn(() => ({
       autoRefreshEnabled: true,
+      shopFreshMinutes: 24 * 60,
+      shopFreshUnit: 'hours',
       shopFreshHours: 24,
       autoRefreshMinIntervalMs: 60_000,
       autoRefreshMaxIntervalMs: 120_000

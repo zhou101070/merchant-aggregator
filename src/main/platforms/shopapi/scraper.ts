@@ -62,6 +62,7 @@ export async function scrapeShopApi(options: {
   minIntervalMs?: number
   /** Concurrent goodsList pages; clamped to SHOP_API_LIMITS.pageConcurrency */
   pageConcurrency?: number
+  userAgent?: string
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
 }): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
@@ -71,14 +72,17 @@ export async function scrapeShopApi(options: {
     })
   }
 
-  const client = new ShopApiClient(options.profile, { minIntervalMs: options.minIntervalMs })
+  const client = new ShopApiClient(options.profile, {
+    minIntervalMs: options.minIntervalMs,
+    userAgent: options.userAgent
+  })
   const token = options.token
   if (options.signal?.aborted) throw new AppError('CANCELLED', 'shop scrape cancelled')
 
-  await client.warmup(token)
+  await client.warmup(token, options.signal)
   if (options.signal?.aborted) throw new AppError('CANCELLED', 'shop scrape cancelled')
 
-  const info = await client.shopInfo(token)
+  const info = await client.shopInfo(token, options.signal)
   const types = info.goods_type_sort.length
     ? info.goods_type_sort
     : [...options.profile.defaultGoodsTypes]
@@ -131,7 +135,8 @@ export async function scrapeShopApi(options: {
             token,
             goodsType,
             current: page,
-            pageSize
+            pageSize,
+            signal: options.signal
           })
           return { page, list }
         })

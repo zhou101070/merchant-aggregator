@@ -2,10 +2,11 @@ import { randomBytes } from 'node:crypto'
 import { AppError } from '@shared/types/errors'
 import type { ShopSiteProfile } from '@shared/platforms/shop-types'
 import { itemPageUrl, resolveShopApiEndpoints, shopRootUrl } from '@shared/platforms/shop-types'
-import { SHOP_API_LIMITS } from '@shared/constants'
+import { RATE_LIMITS, SHOP_API_LIMITS } from '@shared/constants'
+import { appErrorFromAbort, isAbortError } from '../../utils/abort'
 import { createLogger } from '../../utils/logger'
 import { fetchErrorDetails, mainFetch } from '../../utils/main-fetch'
-import { getHostLimiter, hostKey } from '../../services/rate-limiter'
+import { getHostLimiter, hostKey, parseRetryAfterMs } from '../../services/rate-limiter'
 import {
   browserCorsApiHeaders,
   browserDocumentHeaders,
@@ -14,9 +15,18 @@ import {
 import { isShopApiChallengeResponse } from './challenge'
 
 const log = createLogger('shopapi')
+const visitorIdsByHost = new Map<string, string>()
 
 export function createVisitorId(): string {
   return randomBytes(8).toString('hex')
+}
+
+function visitorIdForHost(host: string): string {
+  const existing = visitorIdsByHost.get(host)
+  if (existing) return existing
+  const created = createVisitorId()
+  visitorIdsByHost.set(host, created)
+  return created
 }
 
 export interface ShopApiShopInfo {
@@ -57,7 +67,6 @@ export interface ShopApiGoodsInfo {
 export class ShopApiClient {
   private readonly profile: ShopSiteProfile
   private readonly visitorId: string
-  private readonly cookieJar = new Map<string, string>()
   private readonly ua: string
   private readonly minIntervalMs: number
   private readonly host: string
@@ -67,7 +76,7 @@ export class ShopApiClient {
     options?: { visitorId?: string; userAgent?: string; minIntervalMs?: number }
   ) {
     this.profile = profile
-    this.visitorId = options?.visitorId ?? createVisitorId()
+    this.visitorId = options?.visitorId ?? visitorIdForHost(hostKey(profile.baseUrl))
     this.ua = resolveRequestUserAgent(options?.userAgent)
     this.minIntervalMs = options?.minIntervalMs ?? profile.defaultMinIntervalMs
     this.host = hostKey(profile.baseUrl)
@@ -84,33 +93,6 @@ export class ShopApiClient {
 
   get platformId(): string {
     return this.profile.id
-  }
-
-  private absorbSetCookie(res: Response): void {
-    const anyHeaders = res.headers as Headers & { getSetCookie?: () => string[] }
-    let list: string[] = []
-    if (typeof anyHeaders.getSetCookie === 'function') {
-      list = anyHeaders.getSetCookie()
-    } else {
-      const raw = res.headers.get('set-cookie')
-      if (raw) {
-        list = raw.split(/,(?=\s*[^;=]+=[^;]+)/)
-      }
-    }
-    for (const entry of list) {
-      const part = entry.split(';')[0]
-      const eq = part.indexOf('=')
-      if (eq > 0) {
-        const k = part.slice(0, eq).trim()
-        const v = part.slice(eq + 1).trim()
-        if (k) this.cookieJar.set(k, v)
-      }
-    }
-  }
-
-  private cookieHeader(): string | undefined {
-    if (!this.cookieJar.size) return undefined
-    return [...this.cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
   }
 
   private assertNotChallenge(status: number, text: string, path: string): void {
@@ -136,8 +118,7 @@ export class ShopApiClient {
       userAgent: this.ua,
       origin: this.profile.baseUrl,
       referer,
-      visitorId: this.visitorId,
-      cookie: this.cookieHeader()
+      visitorId: this.visitorId
     })
 
     let res: Response
@@ -149,11 +130,9 @@ export class ShopApiClient {
         signal
       })
     } catch (err) {
-      if (err instanceof Error && (err.name === 'AbortError' || /aborted/i.test(err.message))) {
-        throw new AppError('CANCELLED', 'shop request cancelled', {
-          path,
-          platformId: this.profile.id
-        })
+      if (err instanceof AppError) throw err
+      if (isAbortError(err)) {
+        throw appErrorFromAbort(signal, 'shop request')
       }
       throw new AppError('NETWORK', `shop fetch failed: ${String(err)}`, {
         path,
@@ -163,19 +142,26 @@ export class ShopApiClient {
       })
     }
 
-    this.absorbSetCookie(res)
     const text = await res.text()
 
-    // Empty body after TLS (seen on some white-labels under WAF) → NETWORK
-    if (!text.trim()) {
-      throw new AppError('NETWORK', 'shop empty response body', {
+    this.assertNotChallenge(res.status, text, path)
+
+    if (res.status === 429) {
+      const retryAfterMs =
+        parseRetryAfterMs(res.headers.get('retry-after')) ?? RATE_LIMITS.rateLimitFallbackMs
+      getHostLimiter(this.minIntervalMs).defer(this.host, retryAfterMs)
+      throw new AppError('RATE_LIMIT', 'shop rate limited', {
         path,
         status: res.status,
+        retryAfterMs,
         platformId: this.profile.id
       })
     }
 
-    this.assertNotChallenge(res.status, text, path)
+    if (res.status === 503) {
+      const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'))
+      if (retryAfterMs != null) getHostLimiter(this.minIntervalMs).defer(this.host, retryAfterMs)
+    }
 
     if (!res.ok) {
       throw new AppError('NETWORK', `shop HTTP ${res.status}`, {
@@ -183,6 +169,15 @@ export class ShopApiClient {
         status: res.status,
         platformId: this.profile.id,
         snippet: text.slice(0, 200)
+      })
+    }
+
+    // Empty body after TLS (seen on some white-labels under WAF) → NETWORK
+    if (!text.trim()) {
+      throw new AppError('NETWORK', 'shop empty response body', {
+        path,
+        status: res.status,
+        platformId: this.profile.id
       })
     }
 
@@ -226,8 +221,37 @@ export class ShopApiClient {
         }),
         signal
       })
-      this.absorbSetCookie(res)
       const text = await res.text()
+      if (isShopApiChallengeResponse(res.status, text)) {
+        log.warn('warmup hit challenge page', {
+          platformId: this.profile.id,
+          status: res.status
+        })
+        throw new AppError('NEED_BROWSER', 'shop challenge during warmup', {
+          status: res.status,
+          platformId: this.profile.id
+        })
+      }
+      if (res.status === 429) {
+        const retryAfterMs =
+          parseRetryAfterMs(res.headers.get('retry-after')) ?? RATE_LIMITS.rateLimitFallbackMs
+        getHostLimiter(this.minIntervalMs).defer(this.host, retryAfterMs)
+        throw new AppError('RATE_LIMIT', 'shop rate limited during warmup', {
+          status: res.status,
+          retryAfterMs,
+          platformId: this.profile.id
+        })
+      }
+      if (res.status === 503) {
+        const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'))
+        if (retryAfterMs != null) getHostLimiter(this.minIntervalMs).defer(this.host, retryAfterMs)
+      }
+      if (!res.ok) {
+        throw new AppError('NETWORK', `shop warmup HTTP ${res.status}`, {
+          status: res.status,
+          platformId: this.profile.id
+        })
+      }
       if (!text.trim()) {
         log.warn('warmup empty body', { platformId: this.profile.id, status: res.status })
         throw new AppError('NETWORK', 'shop empty response during warmup', {
@@ -235,36 +259,23 @@ export class ShopApiClient {
           platformId: this.profile.id
         })
       }
-      if (isShopApiChallengeResponse(res.status, text)) {
-        log.warn('warmup hit challenge page', {
-          platformId: this.profile.id,
-          status: res.status,
-          cookies: [...this.cookieJar.keys()]
-        })
-        throw new AppError('NEED_BROWSER', 'shop challenge during warmup', {
-          status: res.status,
-          platformId: this.profile.id
-        })
-      }
       log.info('warmup ok', {
         platformId: this.profile.id,
-        status: res.status,
-        cookies: [...this.cookieJar.keys()]
+        status: res.status
       })
     } catch (err) {
-      if (err instanceof AppError && (err.code === 'NEED_BROWSER' || err.code === 'NETWORK')) {
-        throw err
-      }
+      if (err instanceof AppError) throw err
       log.warn('warmup failed (continuing)', { ...fetchErrorDetails(err) })
     }
   }
 
-  async shopInfo(token: string): Promise<ShopApiShopInfo> {
+  async shopInfo(token: string, signal?: AbortSignal): Promise<ShopApiShopInfo> {
     const endpoints = resolveShopApiEndpoints(this.profile)
     const data = await this.postJsonForShopToken<Record<string, unknown>>(
       endpoints.info,
       { token, category_key: null },
-      token
+      token,
+      signal
     )
     const sort = Array.isArray(data.goods_type_sort)
       ? (data.goods_type_sort as string[])
@@ -282,7 +293,7 @@ export class ShopApiClient {
    * Item page API: goods_key → owning shop token + shop root URL.
    * Referer must be the item page (not /shop/:token).
    */
-  async goodsInfo(goodsKey: string): Promise<ShopApiGoodsInfo> {
+  async goodsInfo(goodsKey: string, signal?: AbortSignal): Promise<ShopApiGoodsInfo> {
     const key = goodsKey.trim()
     if (!key) {
       throw new AppError('SCHEMA_VALIDATION', 'goodsInfo requires goods_key', {
@@ -293,7 +304,8 @@ export class ShopApiClient {
     const data = await this.postJson<Record<string, unknown>>(
       endpoints.goodsInfo,
       { goods_key: key },
-      itemPageUrl(this.profile, key)
+      itemPageUrl(this.profile, key),
+      signal
     )
     const user =
       data.user && typeof data.user === 'object' && !Array.isArray(data.user)
@@ -324,6 +336,7 @@ export class ShopApiClient {
     pageSize?: number
     categoryId?: number
     keywords?: string
+    signal?: AbortSignal
   }): Promise<{ list: ShopApiGoodsItem[]; total?: number }> {
     const endpoints = resolveShopApiEndpoints(this.profile)
     const pageSize = Math.min(
@@ -340,7 +353,8 @@ export class ShopApiClient {
         current: params.current,
         pageSize
       },
-      params.token
+      params.token,
+      params.signal
     )
 
     if (Array.isArray(data)) {

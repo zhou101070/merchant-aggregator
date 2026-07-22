@@ -26,6 +26,19 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/** Parse Retry-After seconds/date and clamp it to one day. */
+export function parseRetryAfterMs(value: string | null, now = Date.now()): number | null {
+  const raw = value?.trim()
+  if (!raw) return null
+  const seconds = Number(raw)
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(24 * 60 * 60_000, Math.ceil(seconds * 1000))
+  }
+  const at = Date.parse(raw)
+  if (!Number.isFinite(at)) return null
+  return Math.min(24 * 60 * 60_000, Math.max(0, at - now))
+}
+
 function abortError(): Error {
   const err = new Error('aborted')
   err.name = 'AbortError'
@@ -101,9 +114,17 @@ export function hostKey(hostOrUrl: string | null | undefined): string {
  * allow up to N starts at once, while the same host stays spaced by intervalMs.
  */
 export class PerHostIntervalLimiter {
-  private readonly nextAt = new Map<string, number>()
+  private readonly schedules: Map<
+    string,
+    { lastAt: number; lastIntervalMs: number; blockedUntil: number }
+  >
 
-  constructor(private intervalMs: number) {}
+  constructor(
+    private intervalMs: number,
+    schedules?: Map<string, { lastAt: number; lastIntervalMs: number; blockedUntil: number }>
+  ) {
+    this.schedules = schedules ?? new Map()
+  }
 
   setIntervalMs(ms: number): void {
     const n = Math.floor(ms)
@@ -127,15 +148,27 @@ export class PerHostIntervalLimiter {
     let bestKey = list[0]!
     let bestScheduled = Number.POSITIVE_INFINITY
     for (const k of list) {
-      const at = this.nextAt.get(k) ?? 0
-      const scheduled = Math.max(now, at)
+      const state = this.schedules.get(k)
+      const scheduled = state
+        ? Math.max(
+            now,
+            state.blockedUntil,
+            state.lastAt + Math.max(state.lastIntervalMs, this.intervalMs)
+          )
+        : now
       if (scheduled < bestScheduled) {
         bestScheduled = scheduled
         bestKey = k
       }
     }
-    // Reserve before await so concurrent acquirers pick distinct free hosts.
-    this.nextAt.set(bestKey, bestScheduled + this.intervalMs)
+    // Reserve before await. The gap between adjacent callers honors the larger
+    // of their requested intervals, so a 500ms resolver cannot weaken a 2s shop policy.
+    const previous = this.schedules.get(bestKey)
+    this.schedules.set(bestKey, {
+      lastAt: bestScheduled,
+      lastIntervalMs: this.intervalMs,
+      blockedUntil: previous?.blockedUntil ?? 0
+    })
     const delay = bestScheduled - now
     if (delay > 0) {
       await sleep(delay, signal)
@@ -149,13 +182,27 @@ export class PerHostIntervalLimiter {
     await this.acquire([hostKey(host) || FALLBACK_HOST_KEY], signal)
   }
 
+  /** Prevent new starts for a host until at least `delayMs` from now. */
+  defer(host: string, delayMs: number): void {
+    const key = hostKey(host) || FALLBACK_HOST_KEY
+    const delay = Math.max(0, Math.floor(delayMs))
+    const current = this.schedules.get(key)
+    this.schedules.set(key, {
+      lastAt: current?.lastAt ?? 0,
+      lastIntervalMs: current?.lastIntervalMs ?? this.intervalMs,
+      blockedUntil: Math.max(current?.blockedUntil ?? 0, Date.now() + delay)
+    })
+  }
+
   /** Test helper */
   peekNextAt(host: string): number {
-    return this.nextAt.get(hostKey(host)) ?? 0
+    const state = this.schedules.get(hostKey(host))
+    if (!state) return 0
+    return Math.max(state.blockedUntil, state.lastAt + state.lastIntervalMs)
   }
 
   clear(): void {
-    this.nextAt.clear()
+    this.schedules.clear()
   }
 }
 
@@ -175,16 +222,14 @@ function uniqueKeys(keys: readonly string[]): string[] {
   return out
 }
 
-/** Process-wide outbound host limiter (merchant list + product sync share this). */
-let sharedHostLimiter: PerHostIntervalLimiter | null = null
+/** Process-wide host schedule; each caller keeps its own immutable interval policy. */
+let sharedHostSchedules = new Map<
+  string,
+  { lastAt: number; lastIntervalMs: number; blockedUntil: number }
+>()
 
 export function getHostLimiter(intervalMs: number): PerHostIntervalLimiter {
-  if (!sharedHostLimiter) {
-    sharedHostLimiter = new PerHostIntervalLimiter(intervalMs)
-  } else {
-    sharedHostLimiter.setIntervalMs(intervalMs)
-  }
-  return sharedHostLimiter
+  return new PerHostIntervalLimiter(intervalMs, sharedHostSchedules)
 }
 
 /** @deprecated use getHostLimiter */
@@ -194,7 +239,7 @@ export function getShopNodeLimiter(intervalMs: number): PerHostIntervalLimiter {
 
 /** Test-only reset */
 export function resetHostLimiterForTests(): void {
-  sharedHostLimiter = null
+  sharedHostSchedules = new Map()
 }
 
 /** @deprecated use resetHostLimiterForTests */

@@ -20,7 +20,7 @@ import {
   identityToScrapeRef
 } from '@shared/platforms/identify'
 import { enabledScrapablePlatformIds, SHOP_PROFILES } from '@shared/platforms/shop-profiles'
-import { findProfileById } from '@shared/platforms/shop-types'
+import { findProfileById, shopRootUrl } from '@shared/platforms/shop-types'
 import { resolveDujiaoBaseUrl } from '../platforms/dujiao/client'
 import { resolveYiciyuanBaseUrl } from '../platforms/yiciyuan/client'
 import { parseAutopixelShopRef } from '../platforms/autopixel/client'
@@ -28,6 +28,7 @@ import { probeYiciyuan } from '../platforms/fingerprint/probe'
 import { getHostLimiter, hostKey, mapWithConcurrency } from './rate-limiter'
 import { runHostGroupedQueue } from './shop-queue'
 import { shouldBlockMerchantAfterSyncFailure } from './sync-failure-policy'
+import { solveShopWafChallenge } from './waf-challenge-window'
 import { enterSyncRequestScope, leaveSyncRequestScope } from './sync-request-log'
 import type { Repositories } from '../db/repositories'
 import { createLogger } from '../utils/logger'
@@ -85,6 +86,22 @@ function resolveHostTokenBaseUrl(
       token: opts.host
     })
     return ref?.baseUrl ?? null
+  }
+  return null
+}
+
+function wafShopUrl(target: ShopScrapeTarget): string | null {
+  if (target.shopUrl?.trim()) return target.shopUrl.trim()
+  const profile = findProfileById(target.platformId, SHOP_PROFILES)
+  if (profile) return shopRootUrl(profile, target.token)
+  for (const raw of [target.entryUrl, target.baseUrl]) {
+    if (!raw?.trim()) continue
+    try {
+      const url = new URL(raw.trim())
+      if (url.protocol === 'http:' || url.protocol === 'https:') return url.toString()
+    } catch {
+      /* continue */
+    }
   }
   return null
 }
@@ -595,10 +612,16 @@ export class SyncOrchestrator {
 
       const priceaiIntervalMs = RATE_LIMITS.priceaiMerchantsIntervalMs.default
       if (jobType === 'merchants') {
-        const client = new PriceaiClient({ userAgent: settings.priceaiUa })
+        const client = new PriceaiClient({
+          userAgent: settings.priceaiUa,
+          minIntervalMs: priceaiIntervalMs
+        })
         await this.runMerchants(jobId, signal, client, priceaiIntervalMs)
       } else if (jobType === 'bootstrap') {
-        const client = new PriceaiClient({ userAgent: settings.priceaiUa })
+        const client = new PriceaiClient({
+          userAgent: settings.priceaiUa,
+          minIntervalMs: priceaiIntervalMs
+        })
         const merchants = await this.fetchMerchantsPhase(
           jobId,
           'bootstrap',
@@ -607,7 +630,7 @@ export class SyncOrchestrator {
           priceaiIntervalMs
         )
         const targets = this.repos.merchants.listScrapableNeedingSync({
-          freshHours: settings.shopFreshHours,
+          freshMinutes: settings.shopFreshMinutes,
           limit: BOOTSTRAP_TOP_N,
           platformIds: enabledIds
         })
@@ -662,7 +685,7 @@ export class SyncOrchestrator {
         const all = ctx.force
           ? this.repos.merchants.listScrapableMerchants()
           : this.repos.merchants.listScrapableNeedingSync({
-              freshHours: settings.shopFreshHours
+              freshMinutes: settings.shopFreshMinutes
             })
         // D15/D16: filter disabled platforms
         const targets = all
@@ -791,7 +814,13 @@ export class SyncOrchestrator {
     }
 
     const deletedNoLink = this.repos.merchants.deleteWithoutExternalLinks()
-    const fp = await this.probeYiciyuanCandidates(jobId, jobType, signal, intervalMs)
+    const fp = await this.probeYiciyuanCandidates(
+      jobId,
+      jobType,
+      signal,
+      intervalMs,
+      settings.priceaiUa
+    )
     return {
       ...result,
       // total kept for progress: PriceAI unique + NodeBits kept
@@ -813,7 +842,8 @@ export class SyncOrchestrator {
     jobId: string,
     jobType: SyncJobType,
     signal: AbortSignal,
-    intervalMs: number
+    intervalMs: number,
+    userAgent?: string
   ): Promise<{ fingerprintMatched: number; fingerprintRejected: number }> {
     const candidates = this.repos.merchants.listYiciyuanProbeCandidates(40)
     if (!candidates.length) {
@@ -838,10 +868,11 @@ export class SyncOrchestrator {
         }
         if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
         try {
-          const result = await probeYiciyuan({
-            host: c.host,
-            shopUrl: c.shopUrl,
-            entryUrl: c.entryUrl
+            const result = await probeYiciyuan({
+              host: c.host,
+              shopUrl: c.shopUrl,
+              entryUrl: c.entryUrl,
+              userAgent
           })
           if (result.kind === 'match') {
             this.repos.merchants.setShopRef(c.id, YICIYUAN_PLATFORM_ID, c.host.toLowerCase())
@@ -927,7 +958,7 @@ export class SyncOrchestrator {
     opts?: {
       skippedFresh?: number
       extraMeta?: Record<string, unknown>
-      /** kept for API compat; simulated browser path has no interactive WAF window */
+      /** Background jobs never open an interactive WAF window. */
       background?: boolean
     }
   ): Promise<void> {
@@ -944,6 +975,8 @@ export class SyncOrchestrator {
     }[] = []
     const total = targets.length
     const pageConcurrency = 1
+    const settings = this.repos.settings.get()
+    const userAgent = settings.priceaiUa
 
     try {
       await runHostGroupedQueue(
@@ -965,21 +998,61 @@ export class SyncOrchestrator {
             `scraping ${target.platformId}:${target.token} (${done + 1}/${total})`
           )
           try {
-            const result = await scrapeShopTarget({
-              target,
-              minIntervalMs,
-              pageConcurrency,
-              signal,
-              onProgress: (p) =>
-                this.progress(
-                  jobId,
-                  jobType,
-                  p.phase,
-                  done,
-                  total,
-                  `${target.platformId}:${target.token}: ${p.current}/${p.total}`
-                )
-            })
+            const scrape = (): ReturnType<typeof scrapeShopTarget> =>
+              scrapeShopTarget({
+                target,
+                minIntervalMs,
+                userAgent,
+                pageConcurrency,
+                signal,
+                onProgress: (p) =>
+                  this.progress(
+                    jobId,
+                    jobType,
+                    p.phase,
+                    done,
+                    total,
+                    `${target.platformId}:${target.token}: ${p.current}/${p.total}`
+                  )
+              })
+
+            let result: Awaited<ReturnType<typeof scrapeShopTarget>>
+            try {
+              result = await scrape()
+            } catch (firstError) {
+              const needsBrowser =
+                firstError instanceof AppError && firstError.code === 'NEED_BROWSER'
+              if (!needsBrowser || opts?.background) throw firstError
+
+              const shopUrl = wafShopUrl(target)
+              if (!shopUrl) throw firstError
+              this.progress(
+                jobId,
+                jobType,
+                'waf',
+                done,
+                total,
+                `请完成 ${target.platformId}:${target.token} 的人机验证`
+              )
+              const solved = await solveShopWafChallenge({
+                shopUrl,
+                userAgent,
+                signal,
+                title: `${target.label ?? target.platformId} · 人机验证`
+              })
+              if (!solved.ok) {
+                if (signal.aborted || solved.reason === 'cancelled') {
+                  throw new AppError('CANCELLED', 'cancelled')
+                }
+                throw new AppError('NEED_BROWSER', solved.reason, {
+                  shopUrl,
+                  platformId: target.platformId,
+                  token: target.token
+                })
+              }
+              // Same target, same Chromium Session, exactly one retry.
+              result = await scrape()
+            }
             const platformId = result.discoveredRef?.platformId ?? target.platformId
             const token = result.discoveredRef?.token ?? target.token
             const source =
@@ -1009,10 +1082,13 @@ export class SyncOrchestrator {
               total,
               `ok ${platformId}:${token} (${done}/${total})`
             )
-          } catch (err) {
+          } catch (caught) {
+            // Only real job cancel stops the whole queue; request timeout is per-shop fail.
+            let err: unknown = caught
             if (err instanceof AppError && err.code === 'CANCELLED') throw err
             if (err instanceof Error && err.name === 'AbortError') {
-              throw new AppError('CANCELLED', 'cancelled')
+              if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
+              err = new AppError('TIMEOUT', 'request timeout')
             }
             // Unknown-platform all-modes-failed: silent skip (no failing health, no blocklist)
             // Does not count as a successful scrape — no empty "synced" claim.
@@ -1070,7 +1146,7 @@ export class SyncOrchestrator {
             if (
               target.merchantId &&
               shouldBlockMerchantAfterSyncFailure({
-                enabled: this.repos.settings.get().blockOnShopSyncFail,
+                enabled: settings.blockOnShopSyncFail,
                 code,
                 notFamily,
                 merchantId: target.merchantId
@@ -1111,7 +1187,8 @@ export class SyncOrchestrator {
       )
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'cancelled')
+        if (signal.aborted) throw new AppError('CANCELLED', 'cancelled')
+        throw new AppError('TIMEOUT', 'request timeout')
       }
       throw err
     }

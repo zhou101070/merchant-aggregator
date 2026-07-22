@@ -17,6 +17,7 @@ export async function scrapeYiciyuan(options: {
   merchantId?: string | null
   shopName?: string | null
   minIntervalMs?: number
+  userAgent?: string
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
 }): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
@@ -29,6 +30,7 @@ export async function scrapeYiciyuan(options: {
   })
   const client = new YiciyuanClient(baseUrl, {
     minIntervalMs: options.minIntervalMs,
+    userAgent: options.userAgent,
     signal: options.signal
   })
 
@@ -74,10 +76,14 @@ export async function fetchYiciyuanProductRow(options: {
   merchantId?: string | null
   shopName?: string | null
   minIntervalMs?: number
+  userAgent?: string
 }): Promise<NormalizedShopProductRow | null> {
   const host = normalizeYiciyuanHost(options.host)
   const baseUrl = resolveYiciyuanBaseUrl({ host, baseUrl: options.baseUrl })
-  const client = new YiciyuanClient(baseUrl, { minIntervalMs: options.minIntervalMs })
+  const client = new YiciyuanClient(baseUrl, {
+    minIntervalMs: options.minIntervalMs,
+    userAgent: options.userAgent
+  })
   let list: YiciyuanCommodity[]
   try {
     list = await client.indexCommodity()

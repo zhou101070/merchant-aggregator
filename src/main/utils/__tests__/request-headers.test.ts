@@ -3,7 +3,7 @@ import {
   browserCorsApiHeaders,
   browserDocumentHeaders,
   browserJsonGetHeaders,
-  chromeMajor,
+  browserScriptHeaders,
   resolveBrowserPlatform,
   resolveChromeUserAgent,
   resolveRequestUserAgent
@@ -13,7 +13,7 @@ describe('request-headers', () => {
   it('builds Windows Chrome UA from version + platform', () => {
     const ua = resolveChromeUserAgent({ chromeVersion: '131.0.6778.0', platform: 'Windows' })
     expect(ua).toContain('Windows NT 10.0; Win64; x64')
-    expect(ua).toContain('Chrome/131.0.6778.0')
+    expect(ua).toContain('Chrome/131.0.0.0')
     expect(ua).not.toContain('Macintosh')
   })
 
@@ -32,7 +32,13 @@ describe('request-headers', () => {
         'MerchantAggregator/1.0 (+personal-research; contact: local-user)'
       )
     ).toMatch(/Chrome\//)
-    expect(resolveRequestUserAgent('CustomBot/1.0')).toBe('CustomBot/1.0')
+    expect(resolveRequestUserAgent('CustomBot/1.0')).toMatch(/Chrome\//)
+    expect(
+      resolveRequestUserAgent(
+        'Mozilla/5.0 AppleWebKit/537.36 Chrome/120.0.0.0 Electron/39.0 Safari/537.36'
+      )
+    ).not.toContain('Electron/')
+    expect(resolveRequestUserAgent(42 as unknown as string)).toMatch(/Chrome\//)
   })
 
   it('json get headers share base browser fields', () => {
@@ -40,11 +46,11 @@ describe('request-headers', () => {
     const h = browserJsonGetHeaders({ userAgent: ua, platform: 'Windows' })
     expect(h.Accept).toContain('application/json')
     expect(h['Accept-Language']).toMatch(/zh-CN/)
-    // cors|same-origin rejected by Electron session.fetch (ERR_INVALID_ARGUMENT)
+    // Main-process API requests have no document context.
     expect(h['Sec-Fetch-Mode']).toBeUndefined()
-    expect(h['Sec-Fetch-Dest']).toBe('empty')
-    expect(h['Sec-Fetch-Site']).toBe('none')
-    expect(h['sec-ch-ua-platform']).toBe('"Windows"')
+    expect(h['Sec-Fetch-Dest']).toBeUndefined()
+    expect(h['Sec-Fetch-Site']).toBeUndefined()
+    expect(h['sec-ch-ua']).toBeUndefined()
     expect(h['User-Agent']).toBe(ua)
   })
 
@@ -56,8 +62,7 @@ describe('request-headers', () => {
     expect(h['Sec-Fetch-Site']).toBe('none')
     expect(h['Sec-Fetch-User']).toBe('?1')
     expect(h['Upgrade-Insecure-Requests']).toBe('1')
-    expect(h['sec-ch-ua-mobile']).toBe('?0')
-    expect(h['sec-ch-ua']).toContain(`"Chromium";v="${chromeMajor('120.0.0.0')}"`)
+    expect(h['sec-ch-ua-mobile']).toBeUndefined()
     expect(h.Visitorid).toBe('abc')
   })
 
@@ -74,10 +79,23 @@ describe('request-headers', () => {
     expect(h['Content-Type']).toBe('application/json')
     expect(h.Origin).toBe('https://pay.ldxp.cn')
     expect(h.Referer).toBe('https://pay.ldxp.cn/shop/tok')
-    expect(h['Sec-Fetch-Mode']).toBeUndefined()
+    expect(h['Sec-Fetch-Mode']).toBe('cors')
     expect(h['Sec-Fetch-Site']).toBe('same-origin')
-    expect(h['sec-ch-ua-platform']).toBe('"macOS"')
+    expect(h['sec-ch-ua']).toBeUndefined()
     expect(h.Cookie).toBe('a=1')
     expect(h.Visitorid).toBe('vid')
+  })
+
+  it('script headers describe a same-origin subresource', () => {
+    const ua = resolveChromeUserAgent({ chromeVersion: '120.0.0.0', platform: 'Windows' })
+    const h = browserScriptHeaders({
+      userAgent: ua,
+      referer: 'https://example.test/shop'
+    })
+    expect(h.Accept).toBe('*/*')
+    expect(h.Referer).toBe('https://example.test/shop')
+    expect(h['Sec-Fetch-Dest']).toBe('script')
+    expect(h['Sec-Fetch-Mode']).toBe('no-cors')
+    expect(h['Sec-Fetch-Site']).toBe('same-origin')
   })
 })

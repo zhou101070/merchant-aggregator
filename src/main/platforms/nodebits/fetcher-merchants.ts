@@ -133,14 +133,23 @@ export async function fetchAllNodebitsMerchants(
         externalUrl = await resolveShopGo(shop.id, options.signal)
       } catch (err) {
         if (err instanceof AppError && err.code === 'CANCELLED') throw err
+        // AbortError only means whole-job cancel when the job signal aborted;
+        // request timeout is TIMEOUT and should not stop the merchants pull.
         if (err instanceof Error && err.name === 'AbortError') {
-          throw new AppError('CANCELLED', 'nodebits merchants fetch cancelled')
+          if (options.signal?.aborted) {
+            throw new AppError('CANCELLED', 'nodebits merchants fetch cancelled')
+          }
+          log.info('go resolve abort without job cancel (treated as miss)', {
+            shopId: shop.id
+          })
+          externalUrl = null
+        } else {
+          log.info('go resolve error', {
+            shopId: shop.id,
+            error: err instanceof Error ? err.message : String(err)
+          })
+          externalUrl = null
         }
-        log.info('go resolve error', {
-          shopId: shop.id,
-          error: err instanceof Error ? err.message : String(err)
-        })
-        externalUrl = null
       }
 
       if (externalUrl) goResolved += 1

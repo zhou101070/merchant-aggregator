@@ -49,7 +49,11 @@ export class ProductStockService {
     })
 
     if (identity.scrapeStrategy === 'dujiao' || platformId === DUJIAO_PLATFORM_ID) {
-      return this.refreshDujiao(local, settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs)
+      return this.refreshDujiao(
+        local,
+        settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs,
+        settings.priceaiUa
+      )
     }
 
     if (
@@ -57,7 +61,11 @@ export class ProductStockService {
       platformId === YICIYUAN_PLATFORM_ID ||
       platformId === 'kami'
     ) {
-      return this.refreshYiciyuan(local, settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs)
+      return this.refreshYiciyuan(
+        local,
+        settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs,
+        settings.priceaiUa
+      )
     }
 
     if (identity.scrapeStrategy !== 'shopapi' || !identity.platformId) {
@@ -79,7 +87,10 @@ export class ProductStockService {
     const goodsType = local.goodsType
     const minIntervalMs = settings.shopMinIntervalMs ?? settings.ldxpMinIntervalMs
 
-    const client = new ShopApiClient(profile, { minIntervalMs })
+    const client = new ShopApiClient(profile, {
+      minIntervalMs,
+      userAgent: settings.priceaiUa
+    })
     await client.warmup(token)
 
     const item = await this.findGoodsItem(client, {
@@ -91,8 +102,10 @@ export class ProductStockService {
     })
 
     if (!item) {
-      log.info('stock refresh miss', { productId, token, goodsKey })
-      return { status: 'not_found', productId }
+      // 店内搜不到：视为已下架/改 key，删本地避免脏数据
+      this.repos.shopProducts.deleteById(productId)
+      log.info('stock refresh removed missing', { productId, token, goodsKey })
+      return { status: 'removed', productId, stock: local.stock }
     }
 
     const row = normalizeGoods(item, {
@@ -104,7 +117,9 @@ export class ProductStockService {
       fetchedAt: new Date().toISOString()
     })
     if (!row) {
-      return { status: 'not_found', productId }
+      this.repos.shopProducts.deleteById(productId)
+      log.info('stock refresh removed unnormalizable', { productId, token, goodsKey })
+      return { status: 'removed', productId, stock: local.stock }
     }
 
     this.repos.shopProducts.upsertMany([row])
@@ -121,7 +136,8 @@ export class ProductStockService {
 
   private async refreshDujiao(
     local: ShopProduct,
-    minIntervalMs: number
+    minIntervalMs: number,
+    userAgent?: string
   ): Promise<RefreshStockResult> {
     const productId = local.id
     const host = local.sourceShopToken
@@ -138,7 +154,8 @@ export class ProductStockService {
       goodsKey: local.sourceGoodsKey,
       merchantId: local.merchantId,
       shopName: local.shopName,
-      minIntervalMs
+      minIntervalMs,
+      userAgent
     })
 
     const row = rows[0]
@@ -162,7 +179,8 @@ export class ProductStockService {
 
   private async refreshYiciyuan(
     local: ShopProduct,
-    minIntervalMs: number
+    minIntervalMs: number,
+    userAgent?: string
   ): Promise<RefreshStockResult> {
     const productId = local.id
     const host = local.sourceShopToken
@@ -179,7 +197,8 @@ export class ProductStockService {
       goodsKey: local.sourceGoodsKey,
       merchantId: local.merchantId,
       shopName: local.shopName,
-      minIntervalMs
+      minIntervalMs,
+      userAgent
     })
 
     if (!row) {

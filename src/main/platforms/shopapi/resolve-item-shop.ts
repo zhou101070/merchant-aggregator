@@ -125,7 +125,7 @@ export function createDefaultItemShopResolver(options?: {
         if (signal?.aborted) {
           throw new AppError('CANCELLED', 'item→shop resolve cancelled')
         }
-        const info = await client.goodsInfo(parsed.goodsKey)
+        const info = await client.goodsInfo(parsed.goodsKey, signal)
         const shopParsed = parseShopUrl(info.shopUrl)
         const token = shopParsed?.token ?? info.shopToken
         const shopUrl = shopParsed?.shopUrl ?? shopRootUrl(profile, token)

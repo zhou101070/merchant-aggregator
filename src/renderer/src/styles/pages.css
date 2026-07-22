@@ -257,6 +257,9 @@ table.detail-products td.col-title .ellipsis {
 }
 
 /* 同步中心 */
+.sync-top-panel {
+  flex: none;
+}
 .product-sync-list {
   display: flex;
   flex-direction: column;

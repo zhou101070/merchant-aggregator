@@ -8,7 +8,9 @@ const sharedAlias = {
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // zod/undici 打进 main bundle(可 tree-shake),避免 asar 塞入整包源码;
+    // better-sqlite3 等 native 仍 external
+    plugins: [externalizeDepsPlugin({ exclude: ['zod', 'undici'] })],
     resolve: {
       alias: sharedAlias
     }

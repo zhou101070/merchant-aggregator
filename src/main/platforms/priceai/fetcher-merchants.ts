@@ -1,6 +1,5 @@
 import { AppError } from '@shared/types/errors'
 import { createLogger } from '../../utils/logger'
-import { IntervalLimiter, sleep } from '../../services/rate-limiter'
 import {
   findShopApiItemUrl,
   hasParseableShopUrl,
@@ -10,7 +9,6 @@ import {
 import type { NormalizedMerchantRow } from './normalize'
 import { hasMerchantExternalLink, normalizeMerchant } from './normalize'
 import { PriceaiClient } from './client'
-import type { PriceaiMerchantsPageParsed } from './zod'
 
 const log = createLogger('priceai:merchants')
 
@@ -74,8 +72,8 @@ function isReadyWithoutItemResolve(row: NormalizedMerchantRow): boolean {
  *    (old code broke early and silently dropped remaining merchants)
  * 5. after loop, require unique count >= total when total is known
  *
- * Transport failures (network/schema/degraded) retry same offset.
- * Protocol / completeness failures fail immediately (no silent partial success).
+ * Transport retry is owned by HttpClient. This layer never retries an offset,
+ * preventing pagination and transport retry multiplication.
  *
  * Persistence: each page flushes ready rows via onMerchantsReady before the
  * next page is requested (item-only rows flush after goodsInfo resolve).
@@ -83,61 +81,28 @@ function isReadyWithoutItemResolve(row: NormalizedMerchantRow): boolean {
 export async function fetchAllMerchants(
   options: FetchAllMerchantsOptions = {}
 ): Promise<FetchAllMerchantsResult> {
-  const client = options.client ?? new PriceaiClient()
+  const client =
+    options.client ??
+    new PriceaiClient({ userAgent: options.userAgent, minIntervalMs: options.intervalMs })
   const limit = options.limit ?? 100
-  const limiter = new IntervalLimiter(options.intervalMs ?? 500)
   const out: NormalizedMerchantRow[] = []
   const seen = new Set<string>()
   let offset = 0
   let total = Number.POSITIVE_INFINITY
   let pages = 0
   let generatedAt: string | null = null
-  let consecutiveFailures = 0
   let emptyLinkDropped = 0
   let droppedItemUnresolved = 0
   let resolvedFromItem = 0
 
   while (offset < total) {
     throwIfAborted(options.signal)
-    try {
-      await limiter.waitTurn(options.signal)
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new AppError('CANCELLED', 'merchants fetch cancelled')
-      }
-      throw err
-    }
-    throwIfAborted(options.signal)
 
-    let page: PriceaiMerchantsPageParsed
-    try {
-      page = await client.fetchMerchantsPage({ limit, offset })
-      consecutiveFailures = 0
-    } catch (err) {
-      if (err instanceof AppError && err.code === 'CANCELLED') throw err
-      consecutiveFailures += 1
-      if (consecutiveFailures >= 5) {
-        throw err instanceof AppError
-          ? err
-          : new AppError('NETWORK', 'merchants fetch circuit open', { cause: String(err) })
-      }
-      const backoff = Math.min(10_000, 500 * 2 ** (consecutiveFailures - 1))
-      log.warn('merchants page failed', {
-        offset,
-        consecutiveFailures,
-        backoff,
-        error: err instanceof Error ? err.message : String(err)
-      })
-      try {
-        await sleep(backoff, options.signal)
-      } catch (sleepErr) {
-        if (sleepErr instanceof Error && sleepErr.name === 'AbortError') {
-          throw new AppError('CANCELLED', 'merchants fetch cancelled')
-        }
-        throw sleepErr
-      }
-      continue
-    }
+    const page = await client.fetchMerchantsPage({
+      limit,
+      offset,
+      ...(options.signal ? { signal: options.signal } : {})
+    })
 
     pages += 1
     total = page.total

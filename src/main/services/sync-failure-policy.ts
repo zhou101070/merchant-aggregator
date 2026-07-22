@@ -10,6 +10,8 @@ export function shouldBlockMerchantAfterSyncFailure(opts: {
   return (
     opts.enabled &&
     opts.code !== 'CANCELLED' &&
+    opts.code !== 'NEED_BROWSER' &&
+    opts.code !== 'RATE_LIMIT' &&
     !opts.notFamily &&
     !opts.silentUnknown &&
     Boolean(opts.merchantId)

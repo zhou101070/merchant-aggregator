@@ -1,11 +1,20 @@
 import type { SavedSearch } from './saved-search'
-import { AUTO_REFRESH_LIMITS, RATE_LIMITS, RECENT_SEARCHES_MAX } from '../constants'
+import {
+  AUTO_REFRESH_LIMITS,
+  RATE_LIMITS,
+  RECENT_SEARCHES_MAX,
+  SHOP_FRESH_LIMITS
+} from '../constants'
 import { normalizeSavedSearches } from '../lib/saved-searches'
 
 /** 外观主题:跟随系统 / 强制浅色 / 强制深色 */
 export type ThemeMode = 'system' | 'light' | 'dark'
 
+/** 旧数据阈值设置页单位 */
+export type ShopFreshUnit = 'minutes' | 'hours'
+
 const THEME_MODES = new Set<ThemeMode>(['system', 'light', 'dark'])
+const SHOP_FRESH_UNITS = new Set<ShopFreshUnit>(['minutes', 'hours'])
 
 export interface AppSettings {
   /** 已废弃：始终 false，保留字段兼容已存设置 */
@@ -13,7 +22,16 @@ export interface AppSettings {
   priceaiUa: string
   /** PriceAI 商家列表分页间隔 — 固定默认值，保留字段兼容已存设置 */
   requestIntervalMs: number
-  /** 旧数据阈值(小时):超过则视为需同步;「同步旧数据店铺」/自动刷新/UI 过期标注 */
+  /**
+   * 旧数据阈值（分钟，规范存储）。
+   * 超过则视为需同步；「同步旧数据店铺」/自动刷新/UI 过期标注。
+   */
+  shopFreshMinutes: number
+  /** 设置页展示单位（分钟/小时） */
+  shopFreshUnit: ShopFreshUnit
+  /**
+   * @deprecated dual-fill with shopFreshMinutes / 60。读路径请用 shopFreshMinutes。
+   */
   shopFreshHours: number
   /** Canonical: min interval between shop API requests */
   shopMinIntervalMs: number
@@ -61,6 +79,34 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
 
 function asFiniteNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function asShopFreshUnit(value: unknown, fallback: ShopFreshUnit): ShopFreshUnit {
+  return typeof value === 'string' && SHOP_FRESH_UNITS.has(value as ShopFreshUnit)
+    ? (value as ShopFreshUnit)
+    : fallback
+}
+
+/** Coalesce minutes from new field or legacy hours; clamp + dual-write hours. */
+export function coerceShopFreshMinutes(
+  partial: Partial<AppSettings> | null | undefined,
+  baseMinutes: number
+): number {
+  const lim = SHOP_FRESH_LIMITS.minutes
+  let minutes: number
+  if (partial && typeof partial.shopFreshMinutes === 'number' && Number.isFinite(partial.shopFreshMinutes)) {
+    minutes = partial.shopFreshMinutes
+  } else if (
+    partial &&
+    typeof partial.shopFreshHours === 'number' &&
+    Number.isFinite(partial.shopFreshHours)
+  ) {
+    minutes = partial.shopFreshHours * 60
+  } else {
+    minutes = baseMinutes
+  }
+  minutes = Math.floor(minutes)
+  return Math.min(lim.max, Math.max(lim.min, minutes))
 }
 
 function clampAutoRefreshIntervals(
@@ -115,6 +161,11 @@ export function coalesceAppSettings(
       ? normalizeSavedSearches(partial.savedSearches)
       : base.savedSearches
 
+  const shopFreshMinutes = coerceShopFreshMinutes(partial, base.shopFreshMinutes)
+  // 双写小时字段，兼容仍读 shopFreshHours 的旧路径
+  const shopFreshHours = shopFreshMinutes / 60
+  const shopFreshUnit = asShopFreshUnit(partial.shopFreshUnit, base.shopFreshUnit)
+
   const next: AppSettings = {
     ...base,
     ...partial,
@@ -123,6 +174,9 @@ export function coalesceAppSettings(
     shopMinIntervalMs,
     shopPageConcurrency,
     requestIntervalMs,
+    shopFreshMinutes,
+    shopFreshHours,
+    shopFreshUnit,
     ldxpScrapeEnabled: shopScrapeEnabled,
     ldxpMinIntervalMs: shopMinIntervalMs,
     theme: asThemeMode(partial.theme, base.theme),
@@ -187,6 +241,15 @@ export function dualWriteSettingsPatch(partial: Partial<AppSettings>): Partial<A
   // 店刮并发固定为 1，忽略外部补丁
   if (partial.shopPageConcurrency !== undefined) {
     out.shopPageConcurrency = 1
+  }
+  // 旧数据阈值：分钟规范 + 双写小时
+  if (partial.shopFreshMinutes !== undefined || partial.shopFreshHours !== undefined) {
+    const minutes = coerceShopFreshMinutes(partial, SHOP_FRESH_LIMITS.minutes.default)
+    out.shopFreshMinutes = minutes
+    out.shopFreshHours = minutes / 60
+  }
+  if (partial.shopFreshUnit !== undefined) {
+    out.shopFreshUnit = asShopFreshUnit(partial.shopFreshUnit, 'hours')
   }
   if (Array.isArray(partial.recentSearches)) {
     out.recentSearches = partial.recentSearches

@@ -75,6 +75,8 @@ pnpm build        # typecheck + 打包编译
 
 **说明**：`better-sqlite3` 需与运行时 Node/Electron ABI 一致。若测试或 dev 报 native 模块版本错误，先关掉正在运行的应用，再执行 `pnpm run rebuild:native:node` 或 `pnpm run rebuild:native:electron`。
 
+**Windows 打包（可在 macOS 交叉编译）**：`pnpm build:win` 固定产出 **x64** NSIS 安装包（`dist/*-x64-setup.exe`）。脚本会先把 `better-sqlite3` 换成 win32-x64 的 Electron 预编译二进制再打包，结束后恢复本机 Electron ABI，保证安装后本地 SQLite 可用。体积方面：只保留 en-US/zh-CN 语言包、裁掉 better-sqlite3 编译源码与未用 Chromium DLL（WebGPU/软件 Vulkan），前端依赖由 Vite 打进 bundle。
+
 Windows 上若 `git push` 的 SSH 22 端口超时，可改用 HTTPS remote。
 
 ## 使用（最短路径）

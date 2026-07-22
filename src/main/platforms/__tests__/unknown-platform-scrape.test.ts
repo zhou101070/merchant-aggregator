@@ -175,6 +175,22 @@ describe('unknown-platform trial helpers', () => {
     }
   })
 
+  it('surfaces NEED_BROWSER so the foreground queue can recover the shared session', async () => {
+    scrapeDujiao.mockRejectedValue(new AppError('NEED_BROWSER', 'challenge'))
+    const target: ShopScrapeTarget = {
+      platformId: 'unknown',
+      token: 'mystery.example.com',
+      merchantId: 'm1',
+      baseUrl: 'https://mystery.example.com',
+      trialUnknownPlatform: true
+    }
+
+    await expect(scrapeUnknownPlatformTrials({ target, minIntervalMs: 1 })).rejects.toMatchObject({
+      code: 'NEED_BROWSER'
+    })
+    expect(scrapeYiciyuan).not.toHaveBeenCalled()
+  })
+
   it('first mode with non-empty rows returns discoveredRef and stops', async () => {
     scrapeShopApi.mockRejectedValue(new AppError('NOT_FOUND', 'shopapi miss'))
     scrapeDujiao.mockResolvedValue({

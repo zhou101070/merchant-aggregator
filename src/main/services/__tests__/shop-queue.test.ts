@@ -78,6 +78,29 @@ describe('runHostGroupedQueue', () => {
     expect(events).toEqual(['start:A', 'end:A', 'start:B', 'end:B', 'start:C', 'end:C'])
   })
 
+  it('serializes same-host queues across concurrent jobs', async () => {
+    const events: string[] = []
+    let active = 0
+    let maxActive = 0
+    const worker = async (t: ShopScrapeTarget): Promise<void> => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      events.push(`start:${t.token}`)
+      await sleep(20)
+      events.push(`end:${t.token}`)
+      active -= 1
+    }
+
+    await Promise.all([
+      runHostGroupedQueue([target('ldxp', 'A')], 8, worker),
+      runHostGroupedQueue([target('ldxp', 'B')], 8, worker)
+    ])
+
+    expect(maxActive).toBe(1)
+    expect(events).toHaveLength(4)
+    expect(events.filter((e) => e.startsWith('start:'))).toHaveLength(2)
+  })
+
   it('runs different hosts in parallel', async () => {
     const targets = [
       target('ldxp', 'A'),

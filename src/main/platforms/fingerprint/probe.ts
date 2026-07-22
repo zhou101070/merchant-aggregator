@@ -20,10 +20,11 @@ export interface FingerprintResult {
 
 async function fetchText(
   url: string,
-  origin: string
+  origin: string,
+  userAgent?: string
 ): Promise<{ ok: boolean; status: number; text: string }> {
   const headers = browserJsonGetHeaders({
-    userAgent: resolveRequestUserAgent(),
+    userAgent: resolveRequestUserAgent(userAgent),
     origin,
     referer: `${origin}/`,
     fetchSite: 'same-origin'
@@ -47,11 +48,12 @@ export async function probeYiciyuan(opts: {
   shopUrl?: string | null
   entryUrl?: string | null
   baseUrl?: string | null
+  userAgent?: string
 }): Promise<FingerprintResult> {
   const baseUrl = resolveYiciyuanBaseUrl(opts)
   const url = `${baseUrl}/user/api/index/data`
   try {
-    const { ok, status, text } = await fetchText(url, baseUrl)
+    const { ok, status, text } = await fetchText(url, baseUrl, opts.userAgent)
     if (!ok) {
       return {
         kind: 'network',
@@ -119,11 +121,12 @@ export async function probeDujiao(opts: {
   shopUrl?: string | null
   entryUrl?: string | null
   baseUrl?: string | null
+  userAgent?: string
 }): Promise<FingerprintResult> {
   const baseUrl = resolveDujiaoBaseUrl(opts)
   const url = `${baseUrl}/api/v1/public/config`
   try {
-    const { ok, status, text } = await fetchText(url, baseUrl)
+    const { ok, status, text } = await fetchText(url, baseUrl, opts.userAgent)
     if (!ok) {
       return {
         kind: 'network',

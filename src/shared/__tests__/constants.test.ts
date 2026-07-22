@@ -5,6 +5,8 @@ import { IPC_CHANNELS } from '../types/ipc'
 describe('DEFAULT_APP_SETTINGS', () => {
   it('matches product defaults', () => {
     expect(DEFAULT_APP_SETTINGS.networkPaused).toBe(false)
+    expect(DEFAULT_APP_SETTINGS.shopFreshMinutes).toBe(24 * 60)
+    expect(DEFAULT_APP_SETTINGS.shopFreshUnit).toBe('hours')
     expect(DEFAULT_APP_SETTINGS.shopFreshHours).toBe(24)
     expect(DEFAULT_APP_SETTINGS.requestIntervalMs).toBe(500)
     expect(DEFAULT_APP_SETTINGS.shopPageConcurrency).toBe(1)

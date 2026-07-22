@@ -8,6 +8,77 @@
 import { scrapeTargetHostKey, type ShopScrapeTarget } from '../platforms/registry'
 import { mapWithConcurrency } from './rate-limiter'
 
+const hostQueueTails = new Map<string, Promise<void>>()
+
+function abortError(): Error {
+  const err = new Error('aborted')
+  err.name = 'AbortError'
+  return err
+}
+
+async function waitForHostTurn(
+  host: string,
+  signal?: AbortSignal
+): Promise<{ release: () => void; ticket: Promise<void> }> {
+  const previous = hostQueueTails.get(host) ?? Promise.resolve()
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  // Keep an aborted middle waiter chained behind its predecessor so a later
+  // waiter cannot overtake the currently active scrape.
+  const ticket = previous.then(() => gate)
+  hostQueueTails.set(host, ticket)
+
+  try {
+    if (signal?.aborted) throw abortError()
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const onAbort = (): void => {
+        if (settled) return
+        settled = true
+        reject(abortError())
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      previous.then(
+        () => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        },
+        () => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        }
+      )
+    })
+    return { release, ticket }
+  } catch (err) {
+    release()
+    void ticket.then(() => {
+      if (hostQueueTails.get(host) === ticket) hostQueueTails.delete(host)
+    })
+    throw err
+  }
+}
+
+async function withHostMutex<T>(
+  host: string,
+  signal: AbortSignal | undefined,
+  worker: () => Promise<T>
+): Promise<T> {
+  const { release, ticket } = await waitForHostTurn(host, signal)
+  try {
+    return await worker()
+  } finally {
+    release()
+    if (hostQueueTails.get(host) === ticket) hostQueueTails.delete(host)
+  }
+}
+
 export interface HostTargetGroup {
   host: string
   targets: ShopScrapeTarget[]
@@ -51,16 +122,13 @@ export async function runHostGroupedQueue(
   await mapWithConcurrency(
     groups,
     maxHostParallel,
-    async (group) => {
-      for (const target of group.targets) {
-        if (signal?.aborted) {
-          const err = new Error('aborted')
-          err.name = 'AbortError'
-          throw err
+    async (group) =>
+      withHostMutex(group.host, signal, async () => {
+        for (const target of group.targets) {
+          if (signal?.aborted) throw abortError()
+          await worker(target)
         }
-        await worker(target)
-      }
-    },
+      }),
     signal
   )
 }

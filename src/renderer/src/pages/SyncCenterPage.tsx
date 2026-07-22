@@ -752,7 +752,7 @@ export function SyncCenterPage(): React.JSX.Element {
   }, [detailJob, historyRows, status?.running, progress])
 
   return (
-    <div className="stack">
+    <div className="stack page-viewport">
       <PageHeader
         title="同步"
         meta="商家列表：PriceAI / NodeBits · 商品与平台识别：全局深刮 · 全部手动发起"
@@ -776,7 +776,7 @@ export function SyncCenterPage(): React.JSX.Element {
         }
       />
 
-      <div className="panel" style={{ padding: '14px 16px' }}>
+      <div className="panel sync-top-panel" style={{ padding: '14px 16px' }}>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
           <input
             className="input"
@@ -837,7 +837,7 @@ export function SyncCenterPage(): React.JSX.Element {
         ) : null}
       </div>
 
-      <div className="panel">
+      <div className="panel panel-fill">
         <PanelHeader
           actions={
             <Button disabled={!canClear} onClick={() => void clearHistory()}>
@@ -873,82 +873,83 @@ export function SyncCenterPage(): React.JSX.Element {
           </Empty>
         ) : (
           <>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>任务</th>
-                  <th>状态</th>
-                  <th className="num">进度</th>
-                  <th>信息</th>
-                  <th>时间</th>
-                  <th className="col-actions" />
-                </tr>
-              </thead>
-              <tbody>
-                {historyRows.map((raw) => {
-                  const j = withLiveProgress(raw, progress)
-                  const errors = jobErrors(j.meta)
-                  const active = j.status === 'running' || j.status === 'pending'
-                  const finished = !active
-                  return (
-                    <tr
-                      key={j.id}
-                      className="clickable"
-                      onClick={() => setDetailJob(j)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          setDetailJob(j)
-                        }
-                      }}
-                      tabIndex={0}
-                      role="button"
-                      aria-label={`查看 ${jobTypeLabel(j.jobType)} 任务详情`}
-                    >
-                      <td className="nowrap">{jobTypeLabel(j.jobType)}</td>
-                      <td>
-                        <StatusDot tone={statusTone(j.status)}>
-                          {STATUS_LABEL[j.status] ?? j.status}
-                        </StatusDot>
-                      </td>
-                      <td className="num mono">
-                        {j.current}/{j.total}
-                        {j.phase ? <div className="small muted">{phaseLabel(j.phase)}</div> : null}
-                        {active ? (
-                          <div style={{ marginTop: 6, minWidth: 80 }}>
-                            <Progress
-                              current={j.current}
-                              total={j.total}
-                              indeterminate={!j.total}
-                            />
+            <div className="list-side">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>任务</th>
+                    <th>状态</th>
+                    <th className="num">进度</th>
+                    <th>信息</th>
+                    <th>时间</th>
+                    <th className="col-actions" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyRows.map((raw) => {
+                    const j = withLiveProgress(raw, progress)
+                    const errors = jobErrors(j.meta)
+                    const active = j.status === 'running' || j.status === 'pending'
+                    const finished = !active
+                    return (
+                      <tr
+                        key={j.id}
+                        className="clickable"
+                        onClick={() => setDetailJob(j)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            setDetailJob(j)
+                          }
+                        }}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`查看 ${jobTypeLabel(j.jobType)} 任务详情`}
+                      >
+                        <td className="nowrap">{jobTypeLabel(j.jobType)}</td>
+                        <td>
+                          <StatusDot tone={statusTone(j.status)}>
+                            {STATUS_LABEL[j.status] ?? j.status}
+                          </StatusDot>
+                        </td>
+                        <td className="num mono">
+                          {j.current}/{j.total}
+                          {active ? (
+                            <div style={{ marginTop: 6, minWidth: 80 }}>
+                              <Progress
+                                current={j.current}
+                                total={j.total}
+                                indeterminate={!j.total}
+                              />
+                            </div>
+                          ) : null}
+                        </td>
+                        <td>
+                          <div className="ellipsis" style={{ maxWidth: 360 }}>
+                            {active ? formatSyncProgress(j) : formatJobUserMessage(j)}
                           </div>
-                        ) : null}
-                      </td>
-                      <td>
-                        <div className="ellipsis" style={{ maxWidth: 360 }}>
-                          {active ? formatSyncProgress(j) : formatJobUserMessage(j)}
-                        </div>
-                        {errors.length ? (
-                          <div className="small muted">{errors.length} 家店失败 · 点开看明细</div>
-                        ) : null}
-                      </td>
-                      <td className="small muted nowrap">{timeAgo(j.finishedAt || j.startedAt)}</td>
-                      <td className="col-actions" onClick={(e) => e.stopPropagation()}>
-                        {finished ? (
-                          <IconButton
-                            label="删除此记录"
-                            className="row-actions"
-                            onClick={() => void deleteJob(j.id)}
-                          >
-                            <Icon name="close" size={14} />
-                          </IconButton>
-                        ) : null}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                          {errors.length ? (
+                            <div className="small muted">{errors.length} 家店失败 · 点开看明细</div>
+                          ) : null}
+                        </td>
+                        <td className="small muted nowrap">{timeAgo(j.finishedAt || j.startedAt)}</td>
+                        <td className="col-actions" onClick={(e) => e.stopPropagation()}>
+                          {finished ? (
+                            <IconButton
+                              label="删除此记录"
+                              className="row-actions"
+                              onClick={() => void deleteJob(j.id)}
+                            >
+                              <Icon name="close" size={14} />
+                            </IconButton>
+                          ) : null}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
             {showPager ? (
               <Pagination
                 page={page}

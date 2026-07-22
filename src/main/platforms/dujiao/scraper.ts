@@ -16,6 +16,7 @@ export async function scrapeDujiao(options: {
   baseUrl?: string | null
   merchantId?: string | null
   minIntervalMs?: number
+  userAgent?: string
   signal?: AbortSignal
   onProgress?: (p: { current: number; total: number; phase: string }) => void
 }): Promise<{ rows: NormalizedShopProductRow[]; shopName: string | null; goodsCount: number }> {
@@ -28,6 +29,7 @@ export async function scrapeDujiao(options: {
   })
   const client = new DujiaoClient(baseUrl, {
     minIntervalMs: options.minIntervalMs,
+    userAgent: options.userAgent,
     signal: options.signal
   })
 
@@ -70,13 +72,17 @@ export async function fetchDujiaoProductRows(options: {
   merchantId?: string | null
   shopName?: string | null
   minIntervalMs?: number
+  userAgent?: string
 }): Promise<NormalizedShopProductRow[]> {
   const host = normalizeDujiaoHost(options.host)
   const baseUrl = resolveDujiaoBaseUrl({ host, baseUrl: options.baseUrl })
   const { slug } = parseDujiaoGoodsKey(options.goodsKey)
   if (!slug) return []
 
-  const client = new DujiaoClient(baseUrl, { minIntervalMs: options.minIntervalMs })
+  const client = new DujiaoClient(baseUrl, {
+    minIntervalMs: options.minIntervalMs,
+    userAgent: options.userAgent
+  })
   let product: DujiaoProduct
   try {
     product = await client.publicProductBySlug(slug)

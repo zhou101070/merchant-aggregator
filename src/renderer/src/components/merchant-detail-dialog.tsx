@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Merchant } from '@shared/types/merchant'
 import type { ShopProduct } from '@shared/types/product'
-import { Badge, Button, Chip, Empty, IconButton, Input, Price } from './ui'
+import { Badge, Button, Chip, Empty, IconButton, Input, Price, Switch } from './ui'
 import { FilterBar } from './layout'
 import { HealthStatus } from './health-status'
 import { ModalDialog, ModalDialogTitle } from './modal-dialog'
@@ -20,6 +20,79 @@ import {
 } from '../lib/shop-ref'
 import { timeAgo } from '../lib/format-time'
 import { filterAndRankShopProducts } from '@shared/lib/shop-product-match'
+
+type ProductSortKey = 'title' | 'price' | 'stock'
+type ProductSortDir = 'asc' | 'desc'
+
+function defaultDirFor(key: ProductSortKey): ProductSortDir {
+  if (key === 'price' || key === 'stock' || key === 'title') return 'asc'
+  return 'desc'
+}
+
+function compareNullableNumber(
+  a: number | null | undefined,
+  b: number | null | undefined,
+  dir: ProductSortDir
+): number {
+  const aOk = typeof a === 'number' && Number.isFinite(a)
+  const bOk = typeof b === 'number' && Number.isFinite(b)
+  if (!aOk && !bOk) return 0
+  if (!aOk) return 1
+  if (!bOk) return -1
+  const d = (a as number) - (b as number)
+  return dir === 'asc' ? d : -d
+}
+
+function sortShopProducts(
+  rows: ShopProduct[],
+  sort: ProductSortKey,
+  sortDir: ProductSortDir
+): ShopProduct[] {
+  const out = [...rows]
+  out.sort((a, b) => {
+    if (sort === 'title') {
+      const d = a.title.localeCompare(b.title, 'zh-CN')
+      return sortDir === 'asc' ? d : -d
+    }
+    if (sort === 'price') return compareNullableNumber(a.price, b.price, sortDir)
+    return compareNullableNumber(a.stock, b.stock, sortDir)
+  })
+  return out
+}
+
+function ProductSortTh({
+  label,
+  col,
+  sort,
+  sortDir,
+  onSort,
+  className
+}: {
+  label: string
+  col: ProductSortKey
+  sort: ProductSortKey
+  sortDir: ProductSortDir
+  onSort: (col: ProductSortKey) => void
+  className?: string
+}): React.JSX.Element {
+  const active = sort === col
+  const mark = active ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+  return (
+    <th className={className}>
+      <button
+        type="button"
+        className={`th-sort${active ? ' on' : ''}`}
+        onClick={() => onSort(col)}
+        aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      >
+        {label}
+        <span className="th-sort-mark" aria-hidden>
+          {mark || ' ↕'}
+        </span>
+      </button>
+    </th>
+  )
+}
 
 function productGroupLabel(t: string): string {
   switch (t) {
@@ -42,6 +115,10 @@ function productGroupKey(p: ShopProduct): string {
   const gt = p.goodsType?.trim()
   if (gt) return gt
   return ''
+}
+
+function isInStock(p: ShopProduct): boolean {
+  return typeof p.stock === 'number' && p.stock > 0
 }
 
 export function MerchantDetailDialog({
@@ -113,12 +190,19 @@ function MerchantDetailBody({
   const [blockBusy, setBlockBusy] = useState(false)
   const [groupFilter, setGroupFilter] = useState<string>('all')
   const [productQ, setProductQ] = useState('')
+  /** 默认只看有货，与搜索页一致 */
+  const [inStockOnly, setInStockOnly] = useState(true)
+  const [sort, setSort] = useState<ProductSortKey>('price')
+  const [sortDir, setSortDir] = useState<ProductSortDir>('asc')
   const groupFilterKey = merchant.id
   const [seenMerchantId, setSeenMerchantId] = useState(groupFilterKey)
   if (groupFilterKey !== seenMerchantId) {
     setSeenMerchantId(groupFilterKey)
     setGroupFilter('all')
     setProductQ('')
+    setInStockOnly(true)
+    setSort('price')
+    setSortDir('asc')
     setBlocked(false)
   }
 
@@ -157,10 +241,15 @@ function MerchantDetailBody({
     }
   }
 
+  const stockScopedProducts = useMemo(() => {
+    if (!inStockOnly) return shopProducts
+    return shopProducts.filter(isInStock)
+  }, [shopProducts, inStockOnly])
+
   const productGroups = useMemo(() => {
     const counts = new Map<string, number>()
     let ungrouped = 0
-    for (const p of shopProducts) {
+    for (const p of stockScopedProducts) {
       const key = productGroupKey(p)
       if (!key) {
         ungrouped += 1
@@ -175,20 +264,35 @@ function MerchantDetailBody({
       groups.push({ key: '__none__', count: ungrouped, label: '未分组' })
     }
     return groups
-  }, [shopProducts])
+  }, [stockScopedProducts])
 
   const filteredProducts = useMemo(() => {
-    let rows = shopProducts
+    let rows = stockScopedProducts
     if (groupFilter === '__none__') {
       rows = rows.filter((p) => !productGroupKey(p))
     } else if (groupFilter !== 'all') {
       rows = rows.filter((p) => productGroupKey(p) === groupFilter)
     }
     if (productQ.trim()) {
+      // 有关键词时先按相关度排，再按用户点选的列稳定重排
       rows = filterAndRankShopProducts(rows, productQ)
     }
-    return rows
-  }, [shopProducts, groupFilter, productQ])
+    return sortShopProducts(rows, sort, sortDir)
+  }, [stockScopedProducts, groupFilter, productQ, sort, sortDir])
+
+  function setSortKey(key: ProductSortKey): void {
+    if (key === sort) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSort(key)
+      setSortDir(defaultDirFor(key))
+    }
+  }
+
+  const hasListFilter =
+    productQ.trim().length > 0 ||
+    groupFilter !== 'all' ||
+    (inStockOnly && stockScopedProducts.length !== shopProducts.length)
 
   return (
     <>
@@ -265,17 +369,23 @@ function MerchantDetailBody({
           <strong>店内商品</strong>
           {shopProducts.length ? (
             <span className="sub">
-              {productQ.trim() || groupFilter !== 'all'
+              {hasListFilter
                 ? `${filteredProducts.length}/${shopProducts.length} 条`
                 : `${shopProducts.length} 条`}
             </span>
           ) : null}
+          {shopProducts.length ? (
+            <label className="in-stock-toggle" title="关闭后显示已同步的售罄商品">
+              <Switch label="只看有货" checked={inStockOnly} onChange={setInStockOnly} />
+              <span>只看有货</span>
+            </label>
+          ) : null}
         </div>
-        {shopProducts.length && productGroups.length > 0 ? (
+        {stockScopedProducts.length && productGroups.length > 0 ? (
           <FilterBar label="分组" style={{ padding: '0 0 10px' }}>
             <Chip on={groupFilter === 'all'} onClick={() => setGroupFilter('all')}>
               全部商品
-              <span className="faint"> {shopProducts.length}</span>
+              <span className="faint"> {stockScopedProducts.length}</span>
             </Chip>
             {productGroups.map((g) => (
               <Chip key={g.key} on={groupFilter === g.key} onClick={() => setGroupFilter(g.key)}>
@@ -306,19 +416,50 @@ function MerchantDetailBody({
               : '该店不支持同步店内价。'}
           </Empty>
         ) : !filteredProducts.length ? (
-          <Empty title={productQ.trim() ? '没有匹配的商品' : '该分组下无商品'}>
+          <Empty
+            title={
+              productQ.trim()
+                ? '没有匹配的商品'
+                : inStockOnly && stockScopedProducts.length === 0
+                  ? '没有有货商品'
+                  : '该分组下无商品'
+            }
+          >
             {productQ.trim()
               ? '试试换个关键词，或清空搜索。'
-              : '换一个分组，或选「全部商品」。'}
+              : inStockOnly && stockScopedProducts.length === 0
+                ? '关闭「只看有货」可查看售罄商品，或重新同步该店。'
+                : '换一个分组，或选「全部商品」。'}
           </Empty>
         ) : (
           <div className="merchant-dialog-table-wrap">
             <table className="table detail-products">
               <thead>
                 <tr>
-                  <th className="col-title">商品</th>
-                  <th className="num col-price">价格</th>
-                  <th className="num col-stock">库存</th>
+                  <ProductSortTh
+                    label="商品"
+                    col="title"
+                    sort={sort}
+                    sortDir={sortDir}
+                    onSort={setSortKey}
+                    className="col-title"
+                  />
+                  <ProductSortTh
+                    label="价格"
+                    col="price"
+                    sort={sort}
+                    sortDir={sortDir}
+                    onSort={setSortKey}
+                    className="num col-price"
+                  />
+                  <ProductSortTh
+                    label="库存"
+                    col="stock"
+                    sort={sort}
+                    sortDir={sortDir}
+                    onSort={setSortKey}
+                    className="num col-stock"
+                  />
                   <th className="col-actions"></th>
                 </tr>
               </thead>

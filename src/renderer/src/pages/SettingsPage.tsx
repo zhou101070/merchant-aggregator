@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { BlockedTarget } from '@shared/types/blocklist'
-import { AUTO_REFRESH_LIMITS } from '@shared/constants'
-import type { AppSettings, ThemeMode } from '@shared/types/settings'
+import { AUTO_REFRESH_LIMITS, SHOP_FRESH_LIMITS } from '@shared/constants'
+import type { AppSettings, ShopFreshUnit, ThemeMode } from '@shared/types/settings'
 import { Button, Empty, Segmented, Switch } from '../components/ui'
 import { PageHeader, PanelHeader } from '../components/layout'
 import { NumberField, SettingsRow } from '../components/settings-fields'
@@ -10,6 +10,16 @@ import { useToast } from '../components/use-toast'
 import { emitDataCleared } from '../lib/data-events'
 import { timeAgo } from '../lib/format-time'
 import { formatUserError } from '../lib/sync-labels'
+
+function shopFreshDisplayValue(minutes: number, unit: ShopFreshUnit): number {
+  if (unit === 'hours') return Math.max(1, Math.round(minutes / 60))
+  return Math.max(1, Math.round(minutes))
+}
+
+function shopFreshToMinutes(value: number, unit: ShopFreshUnit): number {
+  const n = Math.max(1, Math.floor(value))
+  return unit === 'hours' ? n * 60 : n
+}
 
 export function SettingsPage(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
@@ -112,12 +122,39 @@ export function SettingsPage(): React.JSX.Element {
             desc="超过此时长未成功同步的店视为旧数据；「同步旧数据店铺」与自动刷新只处理这些店；搜索结果会标注过期"
           >
             <NumberField
-              value={settings.shopFreshHours}
+              value={shopFreshDisplayValue(
+                settings.shopFreshMinutes ?? settings.shopFreshHours * 60,
+                settings.shopFreshUnit ?? 'hours'
+              )}
               min={1}
-              max={24 * 30}
-              onCommit={(v) => void save({ shopFreshHours: v })}
+              max={
+                (settings.shopFreshUnit ?? 'hours') === 'hours'
+                  ? SHOP_FRESH_LIMITS.minutes.max / 60
+                  : SHOP_FRESH_LIMITS.minutes.max
+              }
+              onCommit={(v) => {
+                const unit = settings.shopFreshUnit ?? 'hours'
+                void save({
+                  shopFreshMinutes: shopFreshToMinutes(v, unit),
+                  shopFreshUnit: unit
+                })
+              }}
             />
-            <span className="unit">小时</span>
+            <Segmented<ShopFreshUnit>
+              label="旧数据阈值单位"
+              value={settings.shopFreshUnit ?? 'hours'}
+              onChange={(unit) => {
+                const minutes =
+                  settings.shopFreshMinutes ??
+                  (settings.shopFreshHours > 0 ? settings.shopFreshHours * 60 : 24 * 60)
+                // 切换单位只改展示，阈值时长保持不变
+                void save({ shopFreshMinutes: minutes, shopFreshUnit: unit })
+              }}
+              options={[
+                { value: 'minutes', label: '分钟' },
+                { value: 'hours', label: '小时' }
+              ]}
+            />
           </SettingsRow>
           <SettingsRow
             label="自动刷新旧数据店铺"
@@ -131,23 +168,23 @@ export function SettingsPage(): React.JSX.Element {
           </SettingsRow>
           <SettingsRow label="自动刷新最短间隔" desc="每个平台两次自动刷新之间的最短等待时间">
             <NumberField
-              value={Math.round(settings.autoRefreshMinIntervalMs / 60_000)}
-              min={AUTO_REFRESH_LIMITS.minIntervalMs.min / 60_000}
-              max={AUTO_REFRESH_LIMITS.minIntervalMs.max / 60_000}
+              value={Math.round(settings.autoRefreshMinIntervalMs / 1000)}
+              min={AUTO_REFRESH_LIMITS.minIntervalMs.min / 1000}
+              max={AUTO_REFRESH_LIMITS.minIntervalMs.max / 1000}
               disabled={!settings.autoRefreshEnabled}
-              onCommit={(v) => void save({ autoRefreshMinIntervalMs: v * 60_000 })}
+              onCommit={(v) => void save({ autoRefreshMinIntervalMs: Math.round(v) * 1000 })}
             />
-            <span className="unit">分钟</span>
+            <span className="unit">秒</span>
           </SettingsRow>
           <SettingsRow label="自动刷新最长间隔" desc="实际等待时间会在最短与最长间隔之间随机选择">
             <NumberField
-              value={Math.round(settings.autoRefreshMaxIntervalMs / 60_000)}
-              min={AUTO_REFRESH_LIMITS.maxIntervalMs.min / 60_000}
-              max={AUTO_REFRESH_LIMITS.maxIntervalMs.max / 60_000}
+              value={Math.round(settings.autoRefreshMaxIntervalMs / 1000)}
+              min={AUTO_REFRESH_LIMITS.maxIntervalMs.min / 1000}
+              max={AUTO_REFRESH_LIMITS.maxIntervalMs.max / 1000}
               disabled={!settings.autoRefreshEnabled}
-              onCommit={(v) => void save({ autoRefreshMaxIntervalMs: v * 60_000 })}
+              onCommit={(v) => void save({ autoRefreshMaxIntervalMs: Math.round(v) * 1000 })}
             />
-            <span className="unit">分钟</span>
+            <span className="unit">秒</span>
           </SettingsRow>
           <SettingsRow label="同步完成通知" desc="任务结束时发送系统通知（需系统允许通知权限）">
             <Switch
